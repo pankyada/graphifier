@@ -1,0 +1,7 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.7,<3
+certifi>=2024.2.2
+python-dotenv>=1.0,<2
+# Optional: install when Neo4j synchronization is configured.
+neo4j>=5.20,<7
