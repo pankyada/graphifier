@@ -11,6 +11,7 @@ import type { TraceDirection } from "@/lib/types";
 import { LineageCanvas } from "./LineageCanvas";
 import { FocusList } from "./FocusList";
 import { displayName } from "./kinds";
+import { GuidedHint } from "./GuidedHint";
 import { KindLegend } from "./KindLegend";
 import type { LineageRole } from "./NodeCard";
 import { ApiDown } from "@/components/shell/ApiDown";
@@ -304,6 +305,8 @@ function GraphPane() {
     </div>
   );
 
+  const showLegend = allNodes.length > 0 && !showFocusList && !(focusTrace && focusTrace.nodes.length === 0);
+
   let body: ReactNode;
   if (graph && allNodes.length === 0) {
     body = (
@@ -357,7 +360,7 @@ function GraphPane() {
             <span className="spinner-dot" aria-hidden="true" /> Tracing lineage…
           </div>
         ) : null}
-        <KindLegend nodes={focusTrace ? focusTrace.nodes : allNodes} />
+        {visibleNodes.length > 0 ? <GuidedHint /> : null}
         {visibleNodes.length === 0 ? (
           <div className="center-state">
             <StatusLine text="Every node is hidden by the kind filter. Re-enable a kind to see the graph." />
@@ -387,9 +390,12 @@ function GraphPane() {
   }
 
   return (
-    <div className="main-content" style={{ display: "flex", flexDirection: "column", flex: "1 1 auto", minHeight: 0 }}>
-      {toolbar}
-      {notices}
+    <div className="main-content">
+      <div className="hud">
+        {toolbar}
+        {notices}
+        {showLegend ? <KindLegend nodes={focusTrace ? focusTrace.nodes : allNodes} /> : null}
+      </div>
       {body}
     </div>
   );

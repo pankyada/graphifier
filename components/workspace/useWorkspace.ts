@@ -73,7 +73,7 @@ export function useWorkspaceState() {
   const [recentEnvironments, setRecentEnvironments] = useState<string[]>([DEFAULT_ENVIRONMENT]);
   const [railWidth, setRailWidthState] = useState(288);
   const [inspectorWidth, setInspectorWidthState] = useState(360);
-  const [railHidden, setRailHidden] = useState(false);
+  const [railPinned, setRailPinned] = useState(false);
   const [inspectorHidden, setInspectorHidden] = useState(false);
   const [railDrawerOpen, setRailDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
@@ -138,7 +138,7 @@ export function useWorkspaceState() {
     setRepoId(storedRepo || null);
     setRailWidthState(clamp(readNumberPref(PREF_KEYS.railWidth, 288), RAIL_MIN, RAIL_MAX));
     setInspectorWidthState(clamp(readNumberPref(PREF_KEYS.inspectorWidth, 360), INSPECTOR_MIN, INSPECTOR_MAX));
-    setRailHidden(readPref(PREF_KEYS.railHidden, "") === "1");
+    setRailPinned(readPref(PREF_KEYS.railPinned, "") === "1");
     setInspectorHidden(readPref(PREF_KEYS.inspectorHidden, "") === "1");
     setStaticNoticeDismissed(readPref(PREF_KEYS.staticNoticeDismissed, "") === "1");
     setHydrated(true);
@@ -350,10 +350,10 @@ export function useWorkspaceState() {
       setRailDrawerOpen((open) => !open);
       return;
     }
-    const next = !railHidden;
-    setRailHidden(next);
-    writePref(PREF_KEYS.railHidden, next ? "1" : "");
-  }, [railHidden]);
+    const next = !railPinned;
+    setRailPinned(next);
+    writePref(PREF_KEYS.railPinned, next ? "1" : "");
+  }, [railPinned]);
 
   const toggleInspector = useCallback(() => {
     if (isNarrowViewport()) {
@@ -593,7 +593,7 @@ export function useWorkspaceState() {
     setRailWidth,
     inspectorWidth,
     setInspectorWidth,
-    railHidden,
+    railPinned,
     railDrawerOpen,
     setRailDrawerOpen,
     toggleRail,

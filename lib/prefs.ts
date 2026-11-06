@@ -74,7 +74,8 @@ export const PREF_KEYS = {
   repoId: "repoId",
   railWidth: "railWidth",
   inspectorWidth: "inspectorWidth",
-  railHidden: "railHidden",
+  railPinned: "railPinned",
+  hintStep: "hintStep",
   inspectorHidden: "inspectorHidden",
   staticNoticeDismissed: "staticNoticeDismissed",
 } as const;

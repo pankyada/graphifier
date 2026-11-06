@@ -16,6 +16,7 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { RotateCcw } from "lucide-react";
+import { FlowEdge } from "./FlowEdge";
 import { NodeCard, type LineageFlowNode, type LineageRole, type PathRole } from "./NodeCard";
 import { kindColor, kindName } from "./kinds";
 import { lineagePath, layeredLayout, NODE_HEIGHT, NODE_WIDTH, type Point } from "@/lib/layout";
@@ -24,18 +25,25 @@ import type { GraphEdge, GraphNode } from "@/lib/types";
 import type { Selection } from "@/components/workspace/useWorkspace";
 
 const nodeTypes = { lineage: NodeCard };
+const edgeTypes = { flow: FlowEdge };
 
-const EDGE_IDLE = "#7A8394";
-const EDGE_SELECTED = "#4F46E5";
-const EDGE_UPSTREAM = "#0F9488";
-const EDGE_DOWNSTREAM = "#4F46E5";
+const EDGE_IDLE = "#8A8578";
+const EDGE_SELECTED = "#1F6F5C";
+const EDGE_UPSTREAM = "#1F6F5C";
+const EDGE_DOWNSTREAM = "#B4532A";
 
 /** Lowest zoom at which node names stay legible in the initial view. */
 const READABLE_ZOOM = 0.6;
 /** Lowest zoom the Fit overview and manual zoom-out may reach. */
 const OVERVIEW_ZOOM = 0.1;
+const CAMERA_MS = 420;
 
 const NO_OVERRIDES = new Map<string, Point>();
+
+/** Entrance wave: columns arrive left to right, following the direction of lineage. */
+const ENTER_STEP = 55;
+const ENTER_MAX = 550;
+const ENTER_WINDOW = ENTER_MAX + 600;
 
 function graphBounds(positions: Map<string, Point>): { width: number; height: number } {
   let minX = Number.POSITIVE_INFINITY;
@@ -94,6 +102,14 @@ export function LineageCanvas(props: LineageCanvasProps) {
     setDragged({ signature, points });
   };
 
+  // Scoped to a short window so nodes panned into view later do not replay it.
+  const [entering, setEntering] = useState(true);
+  useEffect(() => {
+    setEntering(true);
+    const id = window.setTimeout(() => setEntering(false), ENTER_WINDOW);
+    return () => window.clearTimeout(id);
+  }, [signature]);
+
   const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
   const highlight = useHighlight();
   useEffect(() => () => setHighlight(null), []);
@@ -139,6 +155,7 @@ export function LineageCanvas(props: LineageCanvasProps) {
             path: pathRole,
             unresolved: unresolvedIds.has(node.id),
             selected,
+            enterDelay: Math.min(ENTER_MAX, Math.round((position.x / (NODE_WIDTH + 72)) * ENTER_STEP)),
           },
         };
       }),
@@ -164,19 +181,19 @@ export function LineageCanvas(props: LineageCanvasProps) {
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          type: "smoothstep",
+          type: "flow",
           selected,
-          animated: onPath,
+          data: { flow: onPath ? color : null },
           interactionWidth: 16,
           label: showLabel ? edge.kind.replace(/_/g, " ").toLowerCase() : undefined,
           labelStyle: { fontSize: 10, fontWeight: 500, fill: color },
-          labelBgStyle: { fill: "#fff", stroke: "#E1E4EA", strokeWidth: 1 },
+          labelBgStyle: { fill: "#fff", stroke: "#E5E2DB", strokeWidth: 1 },
           labelBgPadding: [5, 2] as [number, number],
           labelBgBorderRadius: 4,
           markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
           style: {
             stroke: color,
-            strokeWidth: selected || hovered || onPath ? 2 : 1.5,
+            strokeWidth: selected || hovered || onPath ? 2.25 : 1.5,
             strokeDasharray: edge.kind === "RESOLVES_TO" ? "5 4" : undefined,
             opacity: dimmed ? 0.14 : 1,
             transition: "opacity 120ms ease, stroke 120ms ease",
@@ -210,11 +227,12 @@ export function LineageCanvas(props: LineageCanvasProps) {
   }, []);
 
   return (
-    <div className="lineage-root" role="group" aria-label="Lineage graph">
+    <div className={`lineage-root${entering ? " is-entering" : ""}`} role="group" aria-label="Lineage graph">
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         minZoom={0.1}
         maxZoom={2}
         nodesConnectable={false}
@@ -242,17 +260,17 @@ export function LineageCanvas(props: LineageCanvasProps) {
           centerRequest={props.centerRequest}
           focusId={props.focusId}
         />
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#D8DCE4" />
+        <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#DAD6CD" />
         <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
           position="bottom-left"
           pannable
           zoomable
-          maskColor="rgba(246, 247, 249, 0.7)"
+          maskColor="rgba(247, 246, 243, 0.7)"
           nodeColor={(node) => {
             const data = (node as LineageFlowNode).data;
             if (node.selected) return EDGE_SELECTED;
-            return data?.node ? `${kindColor(data.node.kind)}80` : "#CBD0DA";
+            return data?.node ? `${kindColor(data.node.kind)}80` : "#D2CEC4";
           }}
           nodeStrokeWidth={2}
           style={{ width: 150, height: 96 }}
@@ -335,14 +353,14 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
       // Zoom at which the whole graph fits with 20% padding on each side.
       const overviewZoom = Math.min((width * 0.6) / bounds.width, (height * 0.6) / bounds.height);
       if (overviewZoom >= READABLE_ZOOM || entryIds.length === 0) {
-        void fitView({ padding: 0.2, duration: 200, maxZoom: 1.1, minZoom: READABLE_ZOOM });
+        void fitView({ padding: 0.2, duration: CAMERA_MS, maxZoom: 1.1, minZoom: READABLE_ZOOM });
         return;
       }
       const anchors = focusId && positions.has(focusId) ? [focusId] : entryIds;
       void fitView({
         nodes: anchors.map((id) => ({ id })),
         padding: 0.2,
-        duration: 200,
+        duration: CAMERA_MS,
         maxZoom: 1.1,
         minZoom: READABLE_ZOOM,
       });
@@ -358,7 +376,7 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
   useEffect(() => {
     if (fitNonce === handledFit.current) return;
     handledFit.current = fitNonce;
-    void fitView({ padding: 0.2, duration: 200, maxZoom: 1.1, minZoom: OVERVIEW_ZOOM });
+    void fitView({ padding: 0.2, duration: CAMERA_MS, maxZoom: 1.1, minZoom: OVERVIEW_ZOOM });
   }, [fitNonce, fitView]);
 
   useEffect(() => {
@@ -368,7 +386,7 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
     if (!point) return;
     void setCenter(point.x + NODE_WIDTH / 2, point.y + NODE_HEIGHT / 2, {
       zoom: Math.max(getZoom(), 0.9),
-      duration: 220,
+      duration: CAMERA_MS,
     });
   }, [centerRequest, positions, setCenter, getZoom, getNode]);
 

@@ -17,6 +17,8 @@ import { CoverageDialog } from "@/components/graph/CoverageDialog";
 import { FolderBrowserDialog } from "@/components/repos/FolderBrowserDialog";
 import { RunAnalysisDialog } from "@/components/jobs/RunAnalysisDialog";
 
+const RAIL_STRIP_WIDTH = 52;
+
 /** Root client shell. Owns global state and renders the grid, dialogs and toasts. */
 export function Workspace() {
   const state = useWorkspaceState();
@@ -92,13 +94,14 @@ function WorkspaceShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const railWidth = ws.railHidden ? 0 : ws.railWidth;
+  // Unpinned, the rail occupies only its icon strip; the panel opens over the canvas.
+  const railWidth = ws.railPinned ? ws.railWidth : RAIL_STRIP_WIDTH;
   const inspectorWidth = ws.inspectorHidden ? 0 : ws.inspectorWidth;
   // CSS custom properties drive the grid tracks; hidden panels collapse to 0px.
   const gridVars = {
     "--rail-w": `${railWidth}px`,
     "--inspector-w": `${inspectorWidth}px`,
-    "--rail-handle": ws.railHidden ? "0px" : "6px",
+    "--rail-handle": ws.railPinned ? "6px" : "0px",
     "--inspector-handle": ws.inspectorHidden ? "0px" : "6px",
   } as unknown as CSSProperties;
 
@@ -117,7 +120,7 @@ function WorkspaceShell() {
       <TopBar />
 
       <div
-        className={`workspace${ws.railHidden ? " rail-hidden" : ""}${ws.inspectorHidden ? " inspector-hidden" : ""}`}
+        className={`workspace${ws.railPinned ? "" : " rail-unpinned"}${ws.inspectorHidden ? " inspector-hidden" : ""}`}
         style={gridVars}
       >
         <LeftRail />

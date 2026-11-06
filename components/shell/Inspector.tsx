@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Copy, PanelRight, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Check, ChevronRight, CircleDashed, Command, Copy, Crosshair } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { EvidenceList } from "@/components/evidence/EvidenceList";
 import { CodeViewer } from "@/components/evidence/CodeViewer";
@@ -12,6 +12,7 @@ import { setHighlight } from "@/lib/highlight";
 import { evidenceTarget, type ViewerTarget } from "@/lib/evidence";
 import { explainEdge, explainNode, isSymbolicExpression } from "@/lib/explain";
 import { relativeTime, sha8, truncateText } from "@/lib/format";
+import { useCountUp } from "@/lib/useCountUp";
 import type { GraphEdge, GraphNode } from "@/lib/types";
 import type { ReactNode } from "react";
 import type { InspectorTab } from "@/components/workspace/useWorkspace";
@@ -69,13 +70,6 @@ export function Inspector() {
 
   return (
     <aside className={`inspector${drawerOpen ? " is-open" : ""}`} aria-label="Inspector">
-      <div className="drawer-head">
-        <span className="label">Inspector</span>
-        <button type="button" className="icon-btn" aria-label="Close inspector" onClick={() => ws.setInspectorDrawerOpen(false)}>
-          <X className="icon" aria-hidden="true" />
-        </button>
-      </div>
-
       <div className="inspector-head">
         <div className="inspector-title-row">
           {node && Icon ? (
@@ -89,16 +83,6 @@ export function Inspector() {
           <h2 className="inspector-title" title={node?.name ?? title}>
             {title}
           </h2>
-          <span className="grow" />
-          <button
-            type="button"
-            className="icon-btn topbar-desktop-only"
-            aria-label="Hide inspector"
-            title="Hide inspector (])"
-            onClick={ws.toggleInspector}
-          >
-            <PanelRight className="icon" aria-hidden="true" />
-          </button>
         </div>
         {node || edge ? (
           <div className="inspector-sub">
@@ -285,6 +269,9 @@ function Overview() {
       .slice(0, TOP_CONNECTED);
   }, [graph]);
 
+  const startNode = connected[0] ? ws.nodeIndex.get(connected[0][0]) : undefined;
+  const startName = startNode ? displayName(startNode).primary : "";
+
   if (!graph) {
     return (
       <p className="muted" style={{ margin: 0 }}>
@@ -296,26 +283,40 @@ function Overview() {
   return (
     <>
       <div className="overview-stats">
-        <div className="stat">
-          <span className="stat-value">{graph.nodes.length}</span>
-          <span className="stat-label">Nodes</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value">{graph.edges.length}</span>
-          <span className="stat-label">Edges</span>
-        </div>
-        {unresolved !== undefined ? (
-          <button
-            type="button"
-            className={`stat stat-action${unresolved > 0 ? " amber" : ""}`}
-            title="Open mappings"
-            onClick={() => ws.setInspectorTab("mapping")}
-          >
-            <span className="stat-value">{unresolved}</span>
-            <span className="stat-label">Unresolved</span>
-          </button>
-        ) : null}
+        <Stat label="Nodes" value={graph.nodes.length} />
+        <Stat label="Edges" value={graph.edges.length} />
+        {unresolved !== undefined ? <Stat label="Unresolved" value={unresolved} amber={unresolved > 0} /> : null}
       </div>
+
+      <section aria-label="Start here" className="start-here">
+        <div className="label">Start here</div>
+        {connected[0] ? (
+          <StartCard
+            icon={Crosshair}
+            title={`Trace ${startName}`}
+            text={`The busiest node, with ${connected[0][1]} edges.`}
+            onClick={() => {
+              ws.setFocus(connected[0][0], "both");
+              ws.centerOn(connected[0][0]);
+            }}
+          />
+        ) : null}
+        {unresolved ? (
+          <StartCard
+            icon={CircleDashed}
+            title={`Resolve ${unresolved} unknown ${unresolved === 1 ? "table" : "tables"}`}
+            text="Bind variables to real datasets and stitch the lineage."
+            onClick={() => ws.setInspectorTab("mapping")}
+          />
+        ) : null}
+        <StartCard
+          icon={Command}
+          title="Search everything"
+          text="Jump to any node, repository or action with ⌘K."
+          onClick={() => ws.openDialog("palette")}
+        />
+      </section>
+
       {connected.length > 0 ? (
         <LinkGroup icon={ArrowRight} title="Most connected">
           {connected.map(([id, count]) => (
@@ -323,11 +324,33 @@ function Overview() {
           ))}
         </LinkGroup>
       ) : null}
-      <p className="hint" style={{ margin: 0 }}>
-        Hover a node to see its lineage. Click to read its evidence. Double-click to trace it. Press{" "}
-        <span className="kbd">?</span> for keyboard shortcuts.
-      </p>
     </>
+  );
+}
+
+function Stat({ label, value, amber = false }: { label: string; value: number; amber?: boolean }) {
+  const shown = useCountUp(value);
+  return (
+    <div className={`stat${amber ? " amber" : ""}`}>
+      <span className="stat-value">{shown}</span>
+      <span className="stat-label">{label}</span>
+    </div>
+  );
+}
+
+function StartCard(props: { icon: typeof Command; title: string; text: string; onClick: () => void }) {
+  const Icon = props.icon;
+  return (
+    <button type="button" className="start-card" onClick={props.onClick}>
+      <span className="start-card-icon" aria-hidden="true">
+        <Icon className="icon" />
+      </span>
+      <span className="start-card-body">
+        <span className="start-card-title truncate">{props.title}</span>
+        <span className="start-card-text">{props.text}</span>
+      </span>
+      <ChevronRight className="icon start-card-arrow" aria-hidden="true" />
+    </button>
   );
 }
 
@@ -514,7 +537,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
         });
       }}
     >
-      <Icon className="icon" aria-hidden="true" style={copied ? { color: "var(--teal-600)" } : undefined} />
+      <Icon className="icon" aria-hidden="true" style={copied ? { color: "var(--ok-600)" } : undefined} />
     </button>
   );
 }

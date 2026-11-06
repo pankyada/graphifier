@@ -16,8 +16,9 @@ export function TopBar() {
       <button
         type="button"
         className="icon-btn"
-        aria-label="Toggle repositories and jobs panel"
-        title="Toggle left panel ([)"
+        aria-label="Keep sidebar open"
+        title={ws.railPinned ? "Let sidebar collapse automatically ([)" : "Keep sidebar open ([)"}
+        aria-pressed={ws.railPinned}
         onClick={ws.toggleRail}
       >
         <PanelLeft className="icon" aria-hidden="true" />

@@ -177,7 +177,7 @@ function PaletteBody() {
         }),
       },
       { id: "coverage", group: "Actions", icon: ShieldCheck, title: "Open coverage and warnings", run: act(() => ws.openDialog("coverage")) },
-      { id: "rail", group: "Actions", icon: LayoutPanelLeft, title: "Toggle left panel", run: act(ws.toggleRail) },
+      { id: "rail", group: "Actions", icon: LayoutPanelLeft, title: ws.railPinned ? "Let sidebar collapse automatically" : "Keep sidebar open", run: act(ws.toggleRail) },
       { id: "inspector", group: "Actions", icon: PanelRight, title: "Toggle inspector", run: act(ws.toggleInspector) },
       { id: "settings", group: "Actions", icon: Settings, title: "Open settings", run: act(() => ws.openDialog("settings")) },
       { id: "keys", group: "Actions", icon: Keyboard, title: "Keyboard shortcuts", run: act(() => ws.openDialog("shortcuts")) },
@@ -193,7 +193,7 @@ function PaletteBody() {
     return [...nodeItems, ...repoItems.filter(matches), ...actions.filter(matches)];
     // ws is a new object on every workspace change; these are the values the list reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [needle, nodes, ws.repoList, ws.repoId, ws.scope, ws.repo, ws.focus, ws.settings.data]);
+  }, [needle, nodes, ws.repoList, ws.repoId, ws.scope, ws.repo, ws.focus, ws.settings.data, ws.railPinned]);
 
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });

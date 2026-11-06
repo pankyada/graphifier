@@ -63,7 +63,7 @@ function CoverageBody() {
             <div key={item.id} role="row" style={{ gridTemplateColumns: "minmax(0,1fr) auto" }}>
               <span role="cell" style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
                 {snap ? (
-                  <CircleCheckBig className="icon" aria-hidden="true" style={{ color: "var(--teal-700)" }} />
+                  <CircleCheckBig className="icon" aria-hidden="true" style={{ color: "var(--ok-700)" }} />
                 ) : (
                   <CircleAlert className="icon" aria-hidden="true" style={{ color: "var(--amber-700)" }} />
                 )}

@@ -1,5 +1,7 @@
 # Graphifier UI design (Next + @xyflow/react + lucide-react)
 
+> Theme: warm neutral with a deep green accent replaced the original cool grey and indigo. Color names in the sections below (indigo, teal) refer to what are now the accent and ok tokens; downstream is rust.
+
 > Design direction from the approved Sonnet pass. The implementation follows the live API contract in `backend/API.md`. Integration updates supersede the original notes below: use relative `/api` through the existing Next.js server proxy; tokens stay server-side; jobs accept `environment`; Neo4j supports aggregate environment sync; evidence accepts `snapshot_id`; use local system fonts rather than remote downloads. No client-side token storage or force-cache control is required. Interaction details below are design targets; delivered scope is recorded in `IMPLEMENTATION.md`.
 
 App = single-route workspace `/`. Light, flat, technical. No landing page, no hero, no marketing prose. API base `http://127.0.0.1:8787` via one typed `api.ts` client (env `NEXT_PUBLIC_API_BASE`). Errors shape `{detail}` -> show verbatim.
@@ -7,13 +9,14 @@ App = single-route workspace `/`. Light, flat, technical. No landing page, no he
 ## 1. Tokens (CSS vars in globals.css; no gradients, no heavy shadows)
 
 ```
---bg:#F6F7F9  --panel:#FFFFFF  --sunken:#EEF0F4  --line:#E1E4EA  --line-strong:#CBD0DA
---ink:#171A21 --ink-2:#4A5262 --ink-3:#7A8394
---indigo-600:#4F46E5 (primary, selection, focus)  --indigo-50:#EEF0FF  --indigo-200:#C7CBFA
---teal-600:#0F9488 (resolved/ok/upstream)  --teal-50:#E6F6F4
---amber-600:#B7791F (unresolved/warning) --amber-50:#FDF5E4
---red-600:#C2410C (failed/conflict)  --red-50:#FDEEE7
---radius:6px (cards 8px)  --focus:0 0 0 2px #fff,0 0 0 4px var(--indigo-600)
+--bg:#F7F6F3  --panel:#FFFFFF  --sunken:#EFEDE8  --line:#E5E2DB  --line-strong:#D2CEC4
+--ink:#1F1E1B --ink-2:#4F4B44 --ink-3:#736E64
+--accent-600:#1F6F5C (primary, selection, focus)  --accent-50:#E8F3EF  --accent-200:#B7D9CE
+--ok-600:#1F6F5C (resolved/ok/upstream)  --ok-50:#E8F3EF
+--down-600:#B4532A (downstream)
+--amber-600:#A16207 (unresolved/warning) --amber-50:#FBF5E3
+--red-600:#B91C1C (failed/conflict)  --red-50:#FDECEC
+--radius:6px (cards 8px)  --focus:0 0 0 2px #fff,0 0 0 4px var(--accent-600)
 ```
 Type: Inter (next/font) 13px base, 12px meta, 11px caps labels (letter-spacing .04em, ink-3). Mono (JetBrains Mono / ui-monospace) 12px for paths, ids, expressions, code. Max heading 15px/600. Spacing scale 4/8/12/16; row height 28px (dense), panel padding 12px, 1px borders instead of shadows. Icons: lucide 14-16px, stroke 1.75.
 

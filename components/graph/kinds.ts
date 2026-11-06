@@ -21,19 +21,19 @@ export function kindName(kind: string): string {
   return kindLabel(kind);
 }
 
-// Hues stay clear of the semantic tokens: amber unresolved, red failed, teal/indigo lineage direction.
+// Hues stay clear of the semantic tokens: amber unresolved, red failed, green upstream, rust downstream.
 const KIND_COLORS: Record<string, string> = {
-  dataset: "#2563eb",
-  column: "#64748b",
-  program: "#7c3aed",
-  transformation: "#0891b2",
-  model: "#db2777",
-  file: "#78716c",
-  job: "#4d7c0f",
+  dataset: "#2f6690",
+  column: "#7a756b",
+  program: "#6d4c9f",
+  transformation: "#2b7a9b",
+  model: "#a8437a",
+  file: "#8a7f70",
+  job: "#5f7a1f",
 };
 
 export function kindColor(kind: string): string {
-  return KIND_COLORS[kind] ?? "#7a8394";
+  return KIND_COLORS[kind] ?? "#8a8578";
 }
 
 /**

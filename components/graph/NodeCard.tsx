@@ -2,7 +2,7 @@
 
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from "@xyflow/react";
 import { ArrowLeft, ArrowRight, CircleAlert, Crosshair, Database, FileSearch } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import type { GraphNode, TraceDirection } from "@/lib/types";
 import { displayName, kindColor, kindIcon, kindName } from "./kinds";
@@ -16,13 +16,15 @@ export interface LineageNodeData extends Record<string, unknown> {
   path: PathRole;
   unresolved: boolean;
   selected: boolean;
+  /** Position in the left-to-right entrance wave, in ms. */
+  enterDelay: number;
 }
 
 export type LineageFlowNode = Node<LineageNodeData, "lineage">;
 
 /** Readable node card: kind icon, short name, kind and schema, state badge and evidence count. */
 export function NodeCard({ data, id }: NodeProps<LineageFlowNode>) {
-  const { node, role, path, unresolved, selected } = data;
+  const { node, role, path, unresolved, selected, enterDelay } = data;
   const canonical = node.attributes?.canonical === true;
   const Icon = unresolved ? CircleAlert : canonical ? Database : kindIcon(node.kind);
   const evidenceCount = node.evidence?.length ?? 0;
@@ -48,7 +50,11 @@ export function NodeCard({ data, id }: NodeProps<LineageFlowNode>) {
   const roleText = role && role !== "focus" ? ` (${role})` : "";
 
   return (
-    <div className={classes} title={`${kindName(node.kind)}: ${node.name}${roleText}`}>
+    <div
+      className={classes}
+      title={`${kindName(node.kind)}: ${node.name}${roleText}`}
+      style={{ "--kind": color ?? "var(--amber-600)", "--enter": `${enterDelay}ms` } as CSSProperties}
+    >
       <NodeToolbar isVisible={selected} position={Position.Top} offset={10}>
         <NodeActions id={id} />
       </NodeToolbar>

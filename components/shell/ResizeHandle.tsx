@@ -16,7 +16,7 @@ export function ResizeHandle({ target }: ResizeHandleProps) {
 
   const width = target === "rail" ? ws.railWidth : ws.inspectorWidth;
   const setWidth = target === "rail" ? ws.setRailWidth : ws.setInspectorWidth;
-  const hidden = target === "rail" ? ws.railHidden : ws.inspectorHidden;
+  const hidden = target === "rail" ? !ws.railPinned : ws.inspectorHidden;
   const label = target === "rail" ? "Resize repositories and jobs panel" : "Resize inspector panel";
   const sign = target === "rail" ? 1 : -1;
 
