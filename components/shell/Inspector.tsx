@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowLeft, ArrowRight, Check, ChevronRight, CircleDashed, Command, Copy, Crosshair } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { EvidenceList } from "@/components/evidence/EvidenceList";
@@ -69,8 +69,12 @@ export function Inspector() {
   const Icon = node ? kindIcon(node.kind) : null;
 
   return (
-    <aside className={`inspector${drawerOpen ? " is-open" : ""}`} aria-label="Inspector">
-      <div className="inspector-head">
+    <aside
+      className={`inspector${drawerOpen ? " is-open" : ""}`}
+      aria-label="Inspector"
+      style={{ "--sheet-tint": node ? kindColor(node.kind) : "var(--accent-600)" } as CSSProperties}
+    >
+      <div className="inspector-head" key={selectionKey}>
         <div className="inspector-title-row">
           {node && Icon ? (
             <span className="chip">

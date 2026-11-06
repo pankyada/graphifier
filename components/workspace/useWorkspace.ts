@@ -382,21 +382,20 @@ export function useWorkspaceState() {
 
   const selectNode = useCallback(
     (id: string) => {
+      // A closed inspector stays closed: its pull-tab shows the new selection instead of covering the canvas.
       setSelection({ kind: "node", id });
-      showInspector();
       // Walking node to node keeps the tab being read; only Mapping is tied to a specific symbol.
       setInspectorTab((tab) => (tab === "mapping" ? "evidence" : tab));
     },
-    [showInspector],
+    [],
   );
 
   const selectEdge = useCallback(
     (id: string) => {
       setSelection({ kind: "edge", id });
-      showInspector();
       setInspectorTab((tab) => (tab === "mapping" ? "evidence" : tab));
     },
-    [showInspector],
+    [],
   );
 
   const clearSelection = useCallback(() => setSelection(null), []);

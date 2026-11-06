@@ -13,6 +13,7 @@ import {
   useReactFlow,
   useStore,
   type Edge,
+  type FitViewOptions,
   type NodeChange,
 } from "@xyflow/react";
 import { RotateCcw } from "lucide-react";
@@ -39,6 +40,10 @@ const OVERVIEW_ZOOM = 0.1;
 const CAMERA_MS = 420;
 
 const NO_OVERRIDES = new Map<string, Point>();
+
+const SHEET_MARGIN = 12;
+/** Width of the inspector pull-tab, which the tether connects to. */
+const TAB_WIDTH = 38;
 
 /** Entrance wave: columns arrive left to right, following the direction of lineage. */
 const ENTER_STEP = 55;
@@ -68,6 +73,8 @@ export interface LineageCanvasProps {
   selection: Selection | null;
   centerRequest: { id: string; nonce: number } | null;
   focusId: string | null;
+  /** Width of the inspector sheet floating over the canvas; 0 when closed. */
+  sheetWidth: number;
   fitNonce: number;
   onSelectNode: (id: string) => void;
   onNavigateNode: (id: string) => void;
@@ -161,6 +168,9 @@ export function LineageCanvas(props: LineageCanvasProps) {
       }),
     [nodes, positions, overrides, roles, unresolvedIds, selection, litId, litKind, hasLitNode, path, selectedEdge],
   );
+
+  const tetherNode = selection?.kind === "node" ? flowNodes.find((node) => node.id === selection.id) : undefined;
+  const tetherColor = tetherNode ? kindColor(tetherNode.data.node.kind) : EDGE_IDLE;
 
   const flowEdges = useMemo<Edge[]>(
     () =>
@@ -259,6 +269,13 @@ export function LineageCanvas(props: LineageCanvasProps) {
           fitNonce={props.fitNonce}
           centerRequest={props.centerRequest}
           focusId={props.focusId}
+          sheetWidth={props.sheetWidth}
+          selectedId={selection?.kind === "node" ? selection.id : null}
+        />
+        <Tether
+          node={tetherNode}
+          color={tetherColor}
+          tabRight={props.sheetWidth > 0 ? props.sheetWidth + SHEET_MARGIN : 0}
         />
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#DAD6CD" />
         <Controls position="bottom-right" showInteractive={false} />
@@ -328,6 +345,37 @@ interface CameraProps {
   fitNonce: number;
   centerRequest: { id: string; nonce: number } | null;
   focusId: string | null;
+  sheetWidth: number;
+  selectedId: string | null;
+}
+
+/** Live line from the selected node to the inspector tab, tying what is read to where it sits. */
+function Tether({ node, color, tabRight }: { node: LineageFlowNode | undefined; color: string; tabRight: number }) {
+  const [tx, ty, zoom] = useStore((state) => state.transform);
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  if (!node || width === 0) return null;
+
+  const startX = (node.position.x + NODE_WIDTH) * zoom + tx;
+  const startY = (node.position.y + NODE_HEIGHT / 2) * zoom + ty;
+  const endX = width - tabRight - TAB_WIDTH;
+  const endY = height / 2;
+  // Off-screen or already beside the tab: a line there would only add noise.
+  const visibleY = startY > 0 && startY < height;
+  if (startX < 0 || startX > endX - 24 || !visibleY) return null;
+
+  const bend = Math.max(40, (endX - startX) / 2);
+  const path = `M${startX} ${startY} C${startX + bend} ${startY} ${endX - bend} ${endY} ${endX} ${endY}`;
+  return (
+    <svg className="tether" aria-hidden="true">
+      <path d={path} className="tether-line" style={{ stroke: color }} />
+      <g className="edge-particle">
+        <circle r={5} fill={color} opacity={0.2} />
+        <circle r={2.5} fill={color} />
+        <animateMotion dur="1.6s" repeatCount="indefinite" path={path} />
+      </g>
+    </svg>
+  );
 }
 
 /**
@@ -337,12 +385,37 @@ interface CameraProps {
  * READABLE_ZOOM; otherwise the traced node, or without a trace the entry nodes, at
  * readable zoom, so text stays legible and the rest is reached by panning. The Fit button always shows the full overview.
  */
-function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focusId }: CameraProps) {
-  const { fitView, setCenter, getZoom, getNode } = useReactFlow();
+function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focusId, sheetWidth, selectedId }: CameraProps) {
+  const { fitView, setCenter, getZoom, getNode, getViewport, setViewport } = useReactFlow();
   const width = useStore((state) => state.width);
   const height = useStore((state) => state.height);
 
   const ready = width > 0 && height > 0;
+  // Read through a ref: opening the sheet must not move the camera, only later moves account for it.
+  const sheetRef = useRef(sheetWidth);
+  sheetRef.current = sheetWidth;
+  // Opening the sheet slides the camera just enough to keep the selected node beside it.
+  const selectedRef = useRef(selectedId);
+  selectedRef.current = selectedId;
+  useEffect(() => {
+    if (sheetWidth === 0 || !selectedRef.current) return;
+    const point = getNode(selectedRef.current)?.position;
+    if (!point) return;
+    const viewport = getViewport();
+    const right = (point.x + NODE_WIDTH) * viewport.zoom + viewport.x;
+    const limit = width - sheetWidth - SHEET_MARGIN * 2 - TAB_WIDTH - 24;
+    if (right <= limit) return;
+    void setViewport({ ...viewport, x: viewport.x - (right - limit) }, { duration: CAMERA_MS });
+    // Only opening or resizing the sheet should move the camera, never panning or selecting.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetWidth]);
+
+  const padding = (): FitViewOptions["padding"] => ({
+    top: "96px",
+    bottom: "32px",
+    left: "48px",
+    right: `${sheetRef.current > 0 ? sheetRef.current + 72 : 72}px`,
+  });
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -351,15 +424,15 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
       if (centerRequest && positions.has(centerRequest.id)) return;
       const bounds = graphBounds(positions);
       // Zoom at which the whole graph fits with 20% padding on each side.
-      const overviewZoom = Math.min((width * 0.6) / bounds.width, (height * 0.6) / bounds.height);
+      const overviewZoom = Math.min(((width - sheetRef.current) * 0.7) / bounds.width, (height * 0.6) / bounds.height);
       if (overviewZoom >= READABLE_ZOOM || entryIds.length === 0) {
-        void fitView({ padding: 0.2, duration: CAMERA_MS, maxZoom: 1.1, minZoom: READABLE_ZOOM });
+        void fitView({ padding: padding(), duration: CAMERA_MS, maxZoom: 1.1, minZoom: READABLE_ZOOM });
         return;
       }
       const anchors = focusId && positions.has(focusId) ? [focusId] : entryIds;
       void fitView({
         nodes: anchors.map((id) => ({ id })),
-        padding: 0.2,
+        padding: padding(),
         duration: CAMERA_MS,
         maxZoom: 1.1,
         minZoom: READABLE_ZOOM,
@@ -376,7 +449,7 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
   useEffect(() => {
     if (fitNonce === handledFit.current) return;
     handledFit.current = fitNonce;
-    void fitView({ padding: 0.2, duration: CAMERA_MS, maxZoom: 1.1, minZoom: OVERVIEW_ZOOM });
+    void fitView({ padding: padding(), duration: CAMERA_MS, maxZoom: 1.1, minZoom: OVERVIEW_ZOOM });
   }, [fitNonce, fitView]);
 
   useEffect(() => {
@@ -384,8 +457,10 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
     // The live node position, so a dragged node is centered where it now sits.
     const point = getNode(centerRequest.id)?.position ?? positions.get(centerRequest.id);
     if (!point) return;
-    void setCenter(point.x + NODE_WIDTH / 2, point.y + NODE_HEIGHT / 2, {
-      zoom: Math.max(getZoom(), 0.9),
+    const zoom = Math.max(getZoom(), 0.9);
+    // Center in the area the sheet leaves free, not behind the sheet.
+    void setCenter(point.x + NODE_WIDTH / 2 + sheetRef.current / 2 / zoom, point.y + NODE_HEIGHT / 2, {
+      zoom,
       duration: CAMERA_MS,
     });
   }, [centerRequest, positions, setCenter, getZoom, getNode]);

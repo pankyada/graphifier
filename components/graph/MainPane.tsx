@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowLeftRight, ArrowRight, ChevronRight, Crosshair, Maximize, Minus, Play, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { LARGE_GRAPH_THRESHOLD } from "@/components/workspace/useWorkspace";
+import { isNarrowViewport, LARGE_GRAPH_THRESHOLD } from "@/components/workspace/useWorkspace";
 import { Onboarding } from "@/components/repos/Onboarding";
 import { isSymbolicExpression } from "@/lib/explain";
 import { traceDepths, traceSides } from "@/lib/layout";
@@ -374,6 +374,7 @@ function GraphPane() {
             selection={ws.selection}
             centerRequest={ws.centerRequest}
             focusId={focusId}
+            sheetWidth={ws.inspectorHidden || isNarrowViewport() ? 0 : ws.inspectorWidth}
             fitNonce={ws.fitNonce}
             onSelectNode={ws.selectNode}
             onNavigateNode={(id) => {

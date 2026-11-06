@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useRef, type CSSProperties } from "react";
+import { PanelLeft } from "lucide-react";
 import { useWorkspaceState, type Workspace as WorkspaceState } from "./useWorkspace";
 import { WorkspaceProvider, useWorkspace } from "./WorkspaceContext";
 import { TopBar } from "@/components/shell/TopBar";
 import { LeftRail } from "@/components/shell/LeftRail";
 import { Inspector } from "@/components/shell/Inspector";
+import { InspectorTab } from "@/components/shell/InspectorTab";
 import { ResizeHandle } from "@/components/shell/ResizeHandle";
 import { Toasts } from "@/components/shell/Toasts";
 import { StatusBanners } from "@/components/shell/StatusBanners";
@@ -18,6 +20,7 @@ import { FolderBrowserDialog } from "@/components/repos/FolderBrowserDialog";
 import { RunAnalysisDialog } from "@/components/jobs/RunAnalysisDialog";
 
 const RAIL_STRIP_WIDTH = 52;
+const SHEET_MARGIN = 12;
 
 /** Root client shell. Owns global state and renders the grid, dialogs and toasts. */
 export function Workspace() {
@@ -96,13 +99,14 @@ function WorkspaceShell() {
 
   // Unpinned, the rail occupies only its icon strip; the panel opens over the canvas.
   const railWidth = ws.railPinned ? ws.railWidth : RAIL_STRIP_WIDTH;
-  const inspectorWidth = ws.inspectorHidden ? 0 : ws.inspectorWidth;
-  // CSS custom properties drive the grid tracks; hidden panels collapse to 0px.
+  // The inspector floats over the canvas, so these tell floating controls how far to stay clear of it.
+  const sheetOpen = !ws.inspectorHidden;
   const gridVars = {
     "--rail-w": `${railWidth}px`,
-    "--inspector-w": `${inspectorWidth}px`,
+    "--inspector-w": `${ws.inspectorWidth}px`,
+    "--sheet-space": sheetOpen ? `${ws.inspectorWidth + SHEET_MARGIN * 2}px` : "0px",
+    "--tab-right": sheetOpen ? `${ws.inspectorWidth + SHEET_MARGIN}px` : "0px",
     "--rail-handle": ws.railPinned ? "6px" : "0px",
-    "--inspector-handle": ws.inspectorHidden ? "0px" : "6px",
   } as unknown as CSSProperties;
 
   const drawerOpen = ws.railDrawerOpen || ws.inspectorDrawerOpen;
@@ -130,11 +134,21 @@ function WorkspaceShell() {
           <div className="main-body">
             <StatusBanners />
             <MainPane />
+            <button
+              type="button"
+              className="panel-fab panel-fab-left"
+              aria-label="Open sidebar"
+              title="Open sidebar ([)"
+              onClick={ws.toggleRail}
+            >
+              <PanelLeft className="icon" aria-hidden="true" />
+            </button>
           </div>
         </main>
 
         <ResizeHandle target="inspector" />
         <Inspector />
+        <InspectorTab />
       </div>
 
       {drawerOpen ? (

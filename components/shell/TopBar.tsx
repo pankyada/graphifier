@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Database, PanelLeft, PanelRight, RefreshCw, Search, Settings, Waypoints } from "lucide-react";
+import { Database, RefreshCw, Search, Settings, Waypoints } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { DEFAULT_ENVIRONMENT } from "@/components/workspace/useWorkspace";
 
@@ -13,17 +13,6 @@ export function TopBar() {
 
   return (
     <header className="topbar">
-      <button
-        type="button"
-        className="icon-btn"
-        aria-label="Keep sidebar open"
-        title={ws.railPinned ? "Let sidebar collapse automatically ([)" : "Keep sidebar open ([)"}
-        aria-pressed={ws.railPinned}
-        onClick={ws.toggleRail}
-      >
-        <PanelLeft className="icon" aria-hidden="true" />
-      </button>
-
       <div className="brand">
         <span className="brand-glyph" aria-hidden="true">
           <Waypoints className="icon" />
@@ -117,15 +106,6 @@ export function TopBar() {
           onClick={() => ws.openDialog("settings")}
         >
           <Settings className="icon" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label="Toggle inspector panel"
-          title="Toggle inspector (])"
-          onClick={ws.toggleInspector}
-        >
-          <PanelRight className="icon" aria-hidden="true" />
         </button>
       </div>
     </header>

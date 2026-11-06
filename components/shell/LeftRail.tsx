@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Activity, FolderGit2, Link2, type LucideIcon } from "lucide-react";
+import { Activity, FolderGit2, Link2, Pin, PinOff, type LucideIcon } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { RepoList } from "@/components/repos/RepoList";
 import { JobList } from "@/components/jobs/JobList";
@@ -24,7 +24,7 @@ const CLOSE_DELAY = 260;
 /**
  * Icon strip with a panel showing one section at a time. Unpinned, the panel opens
  * over the canvas on hover or click and collapses by itself once the pointer leaves
- * or the user acts. The top-bar toggle pins it open.
+ * or the user acts. The pin at the bottom of the strip keeps it open.
  */
 export function LeftRail() {
   const ws = useWorkspace();
@@ -116,6 +116,21 @@ export function LeftRail() {
             </button>
           );
         })}
+        <button
+          type="button"
+          className="rail-tab rail-pin"
+          aria-label={ws.railPinned ? "Let sidebar collapse automatically" : "Keep sidebar open"}
+          aria-pressed={ws.railPinned}
+          data-tip={ws.railPinned ? "Collapse automatically" : "Keep open"}
+          title={ws.railPinned ? "Let sidebar collapse automatically ([)" : "Keep sidebar open ([)"}
+          onClick={() => {
+            window.clearTimeout(timer.current);
+            setPeek(false);
+            ws.toggleRail();
+          }}
+        >
+          {ws.railPinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+        </button>
       </nav>
 
       <div className="rail-panel" aria-hidden={!panelOpen}>
