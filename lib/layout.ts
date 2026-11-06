@@ -1,11 +1,11 @@
 import type { GraphEdge, GraphNode } from "./types";
 
 // Node card footprint used both for layout spacing and for centering the camera.
-export const NODE_WIDTH = 216;
+export const NODE_WIDTH = 232;
 export const NODE_HEIGHT = 64;
 
-const COLUMN_GAP = 64;
-const ROW_GAP = 16;
+const COLUMN_GAP = 72;
+const ROW_GAP = 20;
 
 export interface Point {
   x: number;
@@ -151,4 +151,46 @@ export function traceSides(focusId: string, edges: GraphEdge[]): { upstream: Set
   const downstream = walk(focusId, outgoing);
   for (const id of upstream) if (downstream.has(id)) downstream.delete(id);
   return { upstream, downstream };
+}
+
+/** Edge ids on the lineage of a node, split by side, for lighting up its path. */
+export function lineagePath(
+  id: string,
+  edges: GraphEdge[],
+): { upstream: Set<string>; downstream: Set<string>; upstreamEdges: Set<string>; downstreamEdges: Set<string> } {
+  const { upstream, downstream } = traceSides(id, edges);
+  const upstreamEdges = new Set<string>();
+  const downstreamEdges = new Set<string>();
+  for (const edge of edges) {
+    if (upstream.has(edge.source) && (edge.target === id || upstream.has(edge.target))) upstreamEdges.add(edge.id);
+    if (downstream.has(edge.target) && (edge.source === id || downstream.has(edge.source))) downstreamEdges.add(edge.id);
+  }
+  return { upstream, downstream, upstreamEdges, downstreamEdges };
+}
+
+/** Hop distance of every node reachable from the focus, walking away from it in each direction. */
+export function traceDepths(focusId: string, edges: GraphEdge[]): Map<string, number> {
+  const depths = new Map<string, number>([[focusId, 0]]);
+  const walk = (next: (edge: GraphEdge, current: string) => string | null) => {
+    const seen = new Set([focusId]);
+    let frontier = [focusId];
+    let depth = 0;
+    while (frontier.length > 0) {
+      depth += 1;
+      const following: string[] = [];
+      for (const current of frontier) {
+        for (const edge of edges) {
+          const other = next(edge, current);
+          if (other === null || seen.has(other)) continue;
+          seen.add(other);
+          following.push(other);
+          depths.set(other, Math.min(depths.get(other) ?? depth, depth));
+        }
+      }
+      frontier = following;
+    }
+  };
+  walk((edge, current) => (edge.target === current ? edge.source : null));
+  walk((edge, current) => (edge.source === current ? edge.target : null));
+  return depths;
 }

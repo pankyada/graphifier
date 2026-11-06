@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { CircleAlert, Crosshair, Database, PanelLeft, PanelRight, RefreshCw, Search, Settings, Waypoints } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Database, PanelLeft, PanelRight, RefreshCw, Search, Settings, Waypoints } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { kindIcon, kindName } from "@/components/graph/kinds";
 import { DEFAULT_ENVIRONMENT } from "@/components/workspace/useWorkspace";
-import type { GraphNode } from "@/lib/types";
 
 export function TopBar() {
   const ws = useWorkspace();
@@ -17,10 +15,10 @@ export function TopBar() {
     <header className="topbar">
       <button
         type="button"
-        className="icon-btn drawer-toggle"
+        className="icon-btn"
         aria-label="Toggle repositories and jobs panel"
-        aria-expanded={ws.railDrawerOpen}
-        onClick={() => ws.setRailDrawerOpen(!ws.railDrawerOpen)}
+        title="Toggle left panel ([)"
+        onClick={ws.toggleRail}
       >
         <PanelLeft className="icon" aria-hidden="true" />
       </button>
@@ -121,10 +119,10 @@ export function TopBar() {
         </button>
         <button
           type="button"
-          className="icon-btn drawer-toggle"
+          className="icon-btn"
           aria-label="Toggle inspector panel"
-          aria-expanded={ws.inspectorDrawerOpen}
-          onClick={() => ws.setInspectorDrawerOpen(!ws.inspectorDrawerOpen)}
+          title="Toggle inspector (])"
+          onClick={ws.toggleInspector}
         >
           <PanelRight className="icon" aria-hidden="true" />
         </button>
@@ -184,132 +182,22 @@ function EnvironmentInput() {
 
 function SearchBox() {
   const ws = useWorkspace();
-  const [query, setQuery] = useState("");
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(0);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  const nodes = ws.graph.data?.nodes ?? [];
-  const results = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return [];
-    const matches: GraphNode[] = [];
-    for (const node of nodes) {
-      const haystack = `${node.name} ${node.expression ?? ""} ${node.kind}`.toLowerCase();
-      if (haystack.includes(needle)) matches.push(node);
-      if (matches.length >= 12) break;
-    }
-    return matches;
-  }, [nodes, query]);
-
-  useEffect(() => {
-    const onPointer = (event: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointer);
-    return () => document.removeEventListener("mousedown", onPointer);
-  }, []);
-
-  const choose = (node: GraphNode, refocus: boolean) => {
-    if (refocus) ws.setFocus(node.id, "both");
-    else ws.selectNode(node.id);
-    ws.centerOn(node.id);
-    setOpen(false);
-    setQuery("");
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      setActive((index) => Math.min(index + 1, Math.max(0, results.length - 1)));
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      setActive((index) => Math.max(0, index - 1));
-    } else if (event.key === "Enter" && results[active]) {
-      event.preventDefault();
-      choose(results[active], event.shiftKey);
-    } else if (event.key === "Escape") {
-      setOpen(false);
-      event.currentTarget.blur();
-    }
-  };
-
-  const showResults = open && query.trim().length > 0;
-
+  const count = ws.graph.data?.nodes.length;
   return (
-    <div className="search-wrap" ref={boxRef}>
-      <Search className="icon search-icon" aria-hidden="true" />
-      <input
-        id="global-search"
-        className="input"
-        type="search"
-        role="combobox"
-        aria-expanded={showResults}
-        aria-controls="global-search-results"
-        aria-autocomplete="list"
-        aria-label="Search loaded graph nodes"
-        placeholder={ws.graph.data ? `Search ${nodes.length} nodes` : "Search nodes"}
-        value={query}
-        disabled={!ws.graph.data}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setActive(0);
-          setOpen(true);
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKeyDown}
-      />
-      <span className="kbd topbar-desktop-only" style={{ position: "absolute", right: 6, top: 6 }} aria-hidden="true">
-        /
+    <button
+      type="button"
+      id="global-search"
+      className="search-trigger"
+      aria-label="Search nodes and actions"
+      aria-haspopup="dialog"
+      onClick={() => ws.openDialog("palette")}
+    >
+      <Search className="icon" aria-hidden="true" />
+      <span className="truncate">{count !== undefined ? `Search ${count} nodes and actions` : "Search actions"}</span>
+      <span className="search-trigger-keys topbar-desktop-only" aria-hidden="true">
+        <span className="kbd">⌘</span>
+        <span className="kbd">K</span>
       </span>
-      {showResults ? (
-        <div id="global-search-results" className="search-results" role="listbox" aria-label="Matching nodes">
-          {results.length === 0 ? (
-            <div className="empty-row">No loaded node matches “{query.trim()}”.</div>
-          ) : (
-            results.map((node, index) => {
-              const Icon = kindIcon(node.kind);
-              return (
-                <div
-                  key={node.id}
-                  role="option"
-                  aria-selected={index === active}
-                  className="search-result"
-                  tabIndex={-1}
-                  onMouseEnter={() => setActive(index)}
-                  onClick={() => choose(node, false)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") choose(node, event.shiftKey);
-                  }}
-                >
-                  <Icon className="icon" aria-hidden="true" />
-                  <span className="truncate">
-                    <span style={{ fontWeight: 500 }}>{node.name}</span>{" "}
-                    <span className="muted">{kindName(node.kind)}</span>
-                  </span>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label={`Focus lineage of ${node.name}`}
-                    title="Focus lineage (Shift+Enter)"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      choose(node, true);
-                    }}
-                  >
-                    <Crosshair className="icon" aria-hidden="true" />
-                  </button>
-                </div>
-              );
-            })
-          )}
-        </div>
-      ) : null}
-      {ws.graph.error ? (
-        <span className="sr-only">
-          <CircleAlert aria-hidden="true" /> Search unavailable until the graph loads.
-        </span>
-      ) : null}
-    </div>
+    </button>
   );
 }

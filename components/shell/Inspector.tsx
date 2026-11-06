@@ -1,20 +1,24 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
-import { ArrowRight, Copy, PanelRight, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, Check, Copy, PanelRight, X } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { EvidenceList } from "@/components/evidence/EvidenceList";
 import { CodeViewer } from "@/components/evidence/CodeViewer";
 import { MappingPanel } from "@/components/mapping/MappingPanel";
-import { kindIcon, kindName } from "@/components/graph/kinds";
+import { displayName, kindColor, kindIcon, kindName } from "@/components/graph/kinds";
+import { NodeActions } from "@/components/graph/NodeCard";
+import { setHighlight } from "@/lib/highlight";
 import { evidenceTarget, type ViewerTarget } from "@/lib/evidence";
 import { explainEdge, explainNode, isSymbolicExpression } from "@/lib/explain";
 import { relativeTime, sha8, truncateText } from "@/lib/format";
 import type { GraphEdge, GraphNode } from "@/lib/types";
+import type { ReactNode } from "react";
 import type { InspectorTab } from "@/components/workspace/useWorkspace";
 
 const TABS: { value: InspectorTab; label: string }[] = [
   { value: "evidence", label: "Evidence" },
+  { value: "links", label: "Links" },
   { value: "details", label: "Details" },
   { value: "mapping", label: "Mapping" },
 ];
@@ -53,7 +57,14 @@ export function Inspector() {
   }, [selectionKey]);
 
   const drawerOpen = ws.inspectorDrawerOpen;
-  const title = node ? node.name : edge ? edge.kind.replace(/_/g, " ").toLowerCase() : "Inspector";
+  const title = node ? displayName(node).primary : edge ? edge.kind.replace(/_/g, " ").toLowerCase() : "Overview";
+  const linkCount = useMemo(() => {
+    if (edge) return 2;
+    if (!node) return 0;
+    return neighbors(node.id, ws.graph.data?.edges ?? []).reduce((sum, group) => sum + group.size, 0);
+  }, [node, edge, ws.graph.data]);
+  const tabCount = (tab: InspectorTab) =>
+    !node && !edge ? 0 : tab === "evidence" ? evidence.length : tab === "links" ? linkCount : 0;
   const Icon = node ? kindIcon(node.kind) : null;
 
   return (
@@ -75,7 +86,7 @@ export function Inspector() {
           ) : edge ? (
             <span className="chip">{edge.kind.replace(/_/g, " ").toLowerCase()}</span>
           ) : null}
-          <h2 className="inspector-title" title={title}>
+          <h2 className="inspector-title" title={node?.name ?? title}>
             {title}
           </h2>
           <span className="grow" />
@@ -97,6 +108,7 @@ export function Inspector() {
             <CopyButton value={selection?.id ?? ""} label="Copy id" />
           </div>
         ) : null}
+        {node ? <NodeActions id={node.id} /> : null}
       </div>
 
       <div className="tabs" role="tablist" aria-label="Inspector sections">
@@ -113,17 +125,18 @@ export function Inspector() {
             onClick={() => ws.setInspectorTab(tab.value)}
           >
             {tab.label}
+            {tabCount(tab.value) > 0 ? <span className="count">{tabCount(tab.value)}</span> : null}
           </button>
         ))}
       </div>
 
       <div className="tabpanel" role="tabpanel" id="inspector-panel" aria-labelledby={`tab-${ws.inspectorTab}`}>
-        {ws.inspectorTab === "evidence" ? (
-          !node && !edge ? (
-            <p className="muted" style={{ margin: 0 }}>
-              Select a node or edge to see indexed evidence.
-            </p>
-          ) : (
+        {ws.inspectorTab !== "mapping" && !node && !edge ? <Overview /> : null}
+
+        {ws.inspectorTab === "links" && (node || edge) ? <Links nodeId={node?.id ?? null} edge={edge} /> : null}
+
+        {ws.inspectorTab === "evidence" && (node || edge) ? (
+          (
             <>
               {edge && node === null ? (
                 <EdgeHeader edge={edge} />
@@ -145,17 +158,8 @@ export function Inspector() {
           )
         ) : null}
 
-        {ws.inspectorTab === "details" ? (
-          node ? (
-            <NodeDetails node={node} />
-          ) : edge ? (
-            <EdgeDetails edge={edge} />
-          ) : (
-            <p className="muted" style={{ margin: 0 }}>
-              Select a node or edge to see its details.
-            </p>
-          )
-        ) : null}
+        {ws.inspectorTab === "details" && node ? <NodeDetails node={node} /> : null}
+        {ws.inspectorTab === "details" && edge ? <EdgeDetails edge={edge} /> : null}
 
         {ws.inspectorTab === "mapping" ? (
           <>
@@ -165,6 +169,165 @@ export function Inspector() {
         ) : null}
       </div>
     </aside>
+  );
+}
+
+/** Direct neighbors of a node, in then out, each mapped to the edge kinds linking them. */
+function neighbors(id: string, edges: GraphEdge[]): [Map<string, string[]>, Map<string, string[]>] {
+  const incoming = new Map<string, string[]>();
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (edge.target === id) incoming.set(edge.source, [...(incoming.get(edge.source) ?? []), edge.kind]);
+    if (edge.source === id) outgoing.set(edge.target, [...(outgoing.get(edge.target) ?? []), edge.kind]);
+  }
+  return [incoming, outgoing];
+}
+
+function edgeKindText(kinds: string[]): string {
+  return [...new Set(kinds)].map((kind) => kind.replace(/_/g, " ").toLowerCase()).join(", ");
+}
+
+/** Row that previews a node on the canvas on hover and walks to it on click. */
+function NodeLink({ id, meta }: { id: string; meta?: string }) {
+  const ws = useWorkspace();
+  const node = ws.nodeIndex.get(id);
+  // The row may unmount under the pointer once the selection changes.
+  useEffect(() => () => setHighlight(null), []);
+  if (!node) {
+    return <div className="node-link mono truncate">{id}</div>;
+  }
+  const Icon = kindIcon(node.kind);
+  return (
+    <button
+      type="button"
+      className="node-link"
+      title={node.name}
+      onMouseEnter={() => setHighlight({ type: "node", id })}
+      onMouseLeave={() => setHighlight(null)}
+      onFocus={() => setHighlight({ type: "node", id })}
+      onBlur={() => setHighlight(null)}
+      onClick={() => {
+        setHighlight(null);
+        ws.selectNode(id);
+        ws.centerOn(id);
+      }}
+    >
+      <Icon className="icon" aria-hidden="true" style={{ color: kindColor(node.kind) }} />
+      <span className="truncate node-link-name">{displayName(node).primary}</span>
+      <span className="truncate node-link-meta">{meta ?? kindName(node.kind)}</span>
+    </button>
+  );
+}
+
+function Links({ nodeId, edge }: { nodeId: string | null; edge: GraphEdge | null }) {
+  const ws = useWorkspace();
+  const edges = ws.graph.data?.edges;
+  const [incoming, outgoing] = useMemo(() => neighbors(nodeId ?? "", edges ?? []), [nodeId, edges]);
+
+  if (edge) {
+    return (
+      <>
+        <LinkGroup icon={ArrowLeft} title="From">
+          <NodeLink id={edge.source} />
+        </LinkGroup>
+        <LinkGroup icon={ArrowRight} title="To">
+          <NodeLink id={edge.target} />
+        </LinkGroup>
+      </>
+    );
+  }
+  return (
+    <>
+      <LinkGroup icon={ArrowLeft} title={`Feeds from · ${incoming.size}`}>
+        {incoming.size === 0 ? <div className="empty-row">Nothing upstream in this graph.</div> : null}
+        {[...incoming].map(([id, kinds]) => (
+          <NodeLink key={id} id={id} meta={edgeKindText(kinds)} />
+        ))}
+      </LinkGroup>
+      <LinkGroup icon={ArrowRight} title={`Feeds into · ${outgoing.size}`}>
+        {outgoing.size === 0 ? <div className="empty-row">Nothing downstream in this graph.</div> : null}
+        {[...outgoing].map(([id, kinds]) => (
+          <NodeLink key={id} id={id} meta={edgeKindText(kinds)} />
+        ))}
+      </LinkGroup>
+    </>
+  );
+}
+
+function LinkGroup({ icon: Icon, title, children }: { icon: typeof ArrowLeft; title: string; children: ReactNode }) {
+  return (
+    <section aria-label={title} className="link-group">
+      <div className="label link-group-head">
+        <Icon className="icon" aria-hidden="true" />
+        {title}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const TOP_CONNECTED = 6;
+
+/** Nothing selected: what is in this graph and where to start, from loaded data only. */
+function Overview() {
+  const ws = useWorkspace();
+  const graph = ws.graph.data;
+  const unresolved = ws.symbols.data?.symbols.filter((item) => !item.resolved).length;
+
+  const connected = useMemo(() => {
+    const degree = new Map<string, number>();
+    for (const edge of graph?.edges ?? []) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1);
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1);
+    }
+    return [...degree.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, TOP_CONNECTED);
+  }, [graph]);
+
+  if (!graph) {
+    return (
+      <p className="muted" style={{ margin: 0 }}>
+        Select a node or edge to see indexed evidence.
+      </p>
+    );
+  }
+
+  return (
+    <>
+      <div className="overview-stats">
+        <div className="stat">
+          <span className="stat-value">{graph.nodes.length}</span>
+          <span className="stat-label">Nodes</span>
+        </div>
+        <div className="stat">
+          <span className="stat-value">{graph.edges.length}</span>
+          <span className="stat-label">Edges</span>
+        </div>
+        {unresolved !== undefined ? (
+          <button
+            type="button"
+            className={`stat stat-action${unresolved > 0 ? " amber" : ""}`}
+            title="Open mappings"
+            onClick={() => ws.setInspectorTab("mapping")}
+          >
+            <span className="stat-value">{unresolved}</span>
+            <span className="stat-label">Unresolved</span>
+          </button>
+        ) : null}
+      </div>
+      {connected.length > 0 ? (
+        <LinkGroup icon={ArrowRight} title="Most connected">
+          {connected.map(([id, count]) => (
+            <NodeLink key={id} id={id} meta={`${count} edges`} />
+          ))}
+        </LinkGroup>
+      ) : null}
+      <p className="hint" style={{ margin: 0 }}>
+        Hover a node to see its lineage. Click to read its evidence. Double-click to trace it. Press{" "}
+        <span className="kbd">?</span> for keyboard shortcuts.
+      </p>
+    </>
   );
 }
 
@@ -332,16 +495,26 @@ function AttributeTable({ attributes }: { attributes: Record<string, unknown> | 
 }
 
 function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const Icon = copied ? Check : Copy;
   return (
     <button
       type="button"
       className="icon-btn"
-      aria-label={label}
-      title={label}
+      aria-label={copied ? "Copied" : label}
+      title={copied ? "Copied" : label}
       disabled={!value}
-      onClick={() => void navigator.clipboard?.writeText(value)}
+      onClick={() => {
+        void navigator.clipboard?.writeText(value).then(() => {
+          setCopied(true);
+          window.clearTimeout(timer.current);
+          timer.current = window.setTimeout(() => setCopied(false), 1200);
+        });
+      }}
     >
-      <Copy className="icon" aria-hidden="true" />
+      <Icon className="icon" aria-hidden="true" style={copied ? { color: "var(--teal-600)" } : undefined} />
     </button>
   );
 }

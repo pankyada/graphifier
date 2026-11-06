@@ -1,25 +1,26 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
-import { Crosshair, Maximize, Play, RefreshCw, X } from "lucide-react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, ChevronRight, Crosshair, Maximize, Minus, Play, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { LARGE_GRAPH_THRESHOLD } from "@/components/workspace/useWorkspace";
 import { Onboarding } from "@/components/repos/Onboarding";
 import { isSymbolicExpression } from "@/lib/explain";
-import { traceSides } from "@/lib/layout";
+import { traceDepths, traceSides } from "@/lib/layout";
 import type { TraceDirection } from "@/lib/types";
 import { LineageCanvas } from "./LineageCanvas";
 import { FocusList } from "./FocusList";
-import { kindIcon, kindName } from "./kinds";
+import { displayName } from "./kinds";
+import { KindLegend } from "./KindLegend";
 import type { LineageRole } from "./NodeCard";
 import { ApiDown } from "@/components/shell/ApiDown";
 import { StatusLine } from "@/components/shell/StatusLine";
 import { ResourceNotice } from "@/components/shell/ResourceNotice";
 
-const DIRECTIONS: { value: TraceDirection; label: string }[] = [
-  { value: "in", label: "Upstream" },
-  { value: "both", label: "Both" },
-  { value: "out", label: "Downstream" },
+const DIRECTIONS: { value: TraceDirection; label: string; icon: typeof ArrowLeft }[] = [
+  { value: "in", label: "Upstream", icon: ArrowLeft },
+  { value: "both", label: "Both", icon: ArrowLeftRight },
+  { value: "out", label: "Downstream", icon: ArrowRight },
 ];
 
 /** Routes the main area between onboarding, API errors, loading and the graph. */
@@ -69,14 +70,28 @@ function GraphPane() {
     return set;
   }, [allNodes, ws.resolvedSources]);
 
+  // Depth narrows an already-loaded trace on the client. null shows every hop the API returned.
+  const [depth, setDepth] = useState<number | null>(null);
+  const focusId = ws.focus?.id ?? null;
+  useEffect(() => setDepth(null), [focusId, ws.focus?.direction]);
+
+  const depths = useMemo(
+    () => (focusId && focusTrace ? traceDepths(focusId, focusTrace.edges) : null),
+    [focusId, focusTrace],
+  );
+  const maxDepth = depths ? Math.max(0, ...depths.values()) : 0;
+
   const { visibleNodes, visibleEdges } = useMemo(() => {
     const baseNodes = focusTrace ? focusTrace.nodes : allNodes;
     const baseEdges = focusTrace ? focusTrace.edges : allEdges;
-    const nodes = baseNodes.filter((node) => !ws.hiddenKinds.has(node.kind));
+    const nodes = baseNodes.filter(
+      (node) =>
+        !ws.hiddenKinds.has(node.kind) && (depth === null || !depths || (depths.get(node.id) ?? 0) <= depth),
+    );
     const ids = new Set(nodes.map((node) => node.id));
     const edges = baseEdges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
     return { visibleNodes: nodes, visibleEdges: edges };
-  }, [focusTrace, allNodes, allEdges, ws.hiddenKinds]);
+  }, [focusTrace, allNodes, allEdges, ws.hiddenKinds, depth, depths]);
 
   const roles = useMemo(() => {
     const map = new Map<string, Exclude<LineageRole, null>>();
@@ -130,39 +145,97 @@ function GraphPane() {
     );
   }
 
+  const selectedNodeId = ws.selection?.kind === "node" ? ws.selection.id : null;
+  // Long trails keep the start and the most recent hops.
+  const trail =
+    ws.focusTrail.length > 4
+      ? [ws.focusTrail[0], ...ws.focusTrail.slice(-3)]
+      : ws.focusTrail;
+
   const toolbar = (
-    <div className="graph-toolbar" role="toolbar" aria-label="Lineage toolbar">
+    <div className={`graph-toolbar${ws.focus ? " has-focus" : ""}`} role="toolbar" aria-label="Lineage toolbar">
       {ws.focus ? (
-        <span className="focus-chip">
+        <nav className="focus-trail" aria-label="Focus trail">
           <Crosshair className="icon" aria-hidden="true" />
-          <span className="truncate">
-            Focus: {allNodes.find((node) => node.id === ws.focus?.id)?.name ?? ws.focus.id}
-          </span>
-          <button type="button" className="icon-btn" aria-label="Clear focus" onClick={() => ws.setFocus(null)}>
+          {trail.map((id, index) => {
+            const node = ws.nodeIndex.get(id);
+            const name = node ? displayName(node).primary : id;
+            const current = index === trail.length - 1;
+            return (
+              <Fragment key={id}>
+                {index > 0 ? <ChevronRight className="focus-trail-sep" aria-hidden="true" /> : null}
+                <button
+                  type="button"
+                  className="focus-crumb truncate"
+                  aria-current={current ? "step" : undefined}
+                  title={node?.name ?? id}
+                  onClick={() => (current ? ws.centerOn(id) : ws.setFocus(id, ws.focus?.direction ?? "both"))}
+                >
+                  {name}
+                </button>
+              </Fragment>
+            );
+          })}
+          <button type="button" className="icon-btn" aria-label="Clear focus" title="Clear focus (Esc)" onClick={() => ws.setFocus(null)}>
             <X className="icon" aria-hidden="true" />
           </button>
-        </span>
+        </nav>
       ) : (
-        <span className="muted" style={{ fontSize: 12 }}>
-          {allNodes.length > 0 ? "No focus. Choose a node to trace lineage." : "Lineage"}
+        <span className="toolbar-hint truncate">
+          {allNodes.length === 0
+            ? "Lineage"
+            : selectedNodeId
+              ? "Pick a direction to trace this node."
+              : "Click a node to inspect it, double-click to trace."}
         </span>
       )}
 
       <div className="segmented" role="group" aria-label="Trace direction">
-        {DIRECTIONS.map((item) => (
-          <button
-            key={item.value}
-            type="button"
-            aria-pressed={ws.focus?.direction === item.value}
-            disabled={!ws.focus}
-            onClick={() => ws.setDirection(item.value)}
-          >
-            {item.label}
-          </button>
-        ))}
+        {DIRECTIONS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.value}
+              type="button"
+              aria-label={item.label}
+              aria-pressed={ws.focus?.direction === item.value}
+              disabled={!ws.focus && !selectedNodeId}
+              title={ws.focus || selectedNodeId ? item.label : "Select a node first"}
+              onClick={() => {
+                if (ws.focus) ws.setDirection(item.value);
+                else if (selectedNodeId) ws.setFocus(selectedNodeId, item.value);
+              }}
+            >
+              <Icon className="icon" aria-hidden="true" />
+              <span className="seg-label">{item.label}</span>
+            </button>
+          );
+        })}
       </div>
 
-      <KindFilter nodes={allNodes} />
+      {ws.focus && maxDepth > 1 ? (
+        <div className="stepper" role="group" aria-label="Trace depth">
+          <button
+            type="button"
+            aria-label="Show fewer hops"
+            disabled={(depth ?? maxDepth) <= 1}
+            onClick={() => setDepth(Math.max(1, (depth ?? maxDepth) - 1))}
+          >
+            <Minus className="icon" aria-hidden="true" />
+          </button>
+          <span aria-live="polite">
+            {depth === null || depth >= maxDepth ? `${maxDepth} hops` : `${depth}/${maxDepth} hops`}
+          </span>
+          <button
+            type="button"
+            aria-label="Show more hops"
+            disabled={depth === null || depth >= maxDepth}
+            onClick={() => setDepth(depth === null || depth + 1 >= maxDepth ? null : depth + 1)}
+          >
+            <Plus className="icon" aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
 
       <button type="button" className="icon-btn" aria-label="Fit graph to view" title="Fit (F)" onClick={ws.fitGraph}>
         <Maximize className="icon" aria-hidden="true" />
@@ -171,8 +244,9 @@ function GraphPane() {
       <span className="toolbar-spacer" />
 
       <span className="toolbar-counts" aria-live="polite">
-        {visibleNodes.length} nodes · {visibleEdges.length} edges
-        {ws.hiddenKinds.size > 0 || focusTrace ? ` (of ${allNodes.length} / ${allEdges.length})` : ""}
+        {ws.hiddenKinds.size > 0 || focusTrace
+          ? `${visibleNodes.length}/${allNodes.length} nodes · ${visibleEdges.length}/${allEdges.length} edges`
+          : `${visibleNodes.length} nodes · ${visibleEdges.length} edges`}
       </span>
 
       <button
@@ -182,7 +256,12 @@ function GraphPane() {
         title="Coverage and warnings"
       >
         Coverage {indexedCount}/{scopeRepos.length}
-        {warningCount > 0 ? ` · ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}
+        {warningCount > 0 ? (
+          <span className="coverage-warn" aria-label={`${warningCount} warning${warningCount === 1 ? "" : "s"}`}>
+            <TriangleAlert className="icon" aria-hidden="true" />
+            {warningCount}
+          </span>
+        ) : null}
       </button>
     </div>
   );
@@ -278,6 +357,7 @@ function GraphPane() {
             <span className="spinner-dot" aria-hidden="true" /> Tracing lineage…
           </div>
         ) : null}
+        <KindLegend nodes={focusTrace ? focusTrace.nodes : allNodes} />
         {visibleNodes.length === 0 ? (
           <div className="center-state">
             <StatusLine text="Every node is hidden by the kind filter. Re-enable a kind to see the graph." />
@@ -290,8 +370,13 @@ function GraphPane() {
             unresolvedIds={unresolvedIds}
             selection={ws.selection}
             centerRequest={ws.centerRequest}
+            focusId={focusId}
             fitNonce={ws.fitNonce}
             onSelectNode={ws.selectNode}
+            onNavigateNode={(id) => {
+              ws.selectNode(id);
+              ws.centerOn(id);
+            }}
             onFocusNode={(id) => ws.setFocus(id, ws.focus?.direction ?? "both")}
             onSelectEdge={ws.selectEdge}
             onClearSelection={ws.clearSelection}
@@ -307,38 +392,5 @@ function GraphPane() {
       {notices}
       {body}
     </div>
-  );
-}
-
-function KindFilter({ nodes }: { nodes: { kind: string }[] }) {
-  const ws = useWorkspace();
-  const counts = new Map<string, number>();
-  for (const node of nodes) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
-  const kinds = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  if (kinds.length === 0) return null;
-  const shown = kinds.length - kinds.filter(([kind]) => ws.hiddenKinds.has(kind)).length;
-  return (
-    <details className="details-menu">
-      <summary aria-label={`Filter kinds, ${shown} of ${kinds.length} shown`}>
-        Kinds <span className="count">{shown}/{kinds.length}</span>
-      </summary>
-      <div className="menu-panel" role="group" aria-label="Visible kinds">
-        {kinds.map(([kind, count]) => {
-          const Icon = kindIcon(kind);
-          return (
-            <label key={kind} className="check-row">
-              <input
-                type="checkbox"
-                checked={!ws.hiddenKinds.has(kind)}
-                onChange={() => ws.toggleKind(kind)}
-              />
-              <Icon className="icon" aria-hidden="true" />
-              <span>{kindName(kind)}</span>
-              <span className="count">{count}</span>
-            </label>
-          );
-        })}
-      </div>
-    </details>
   );
 }

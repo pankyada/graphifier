@@ -1,21 +1,25 @@
 "use client";
 
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
   Controls,
   MarkerType,
   MiniMap,
+  Panel,
   ReactFlow,
   useReactFlow,
   useStore,
   type Edge,
+  type NodeChange,
 } from "@xyflow/react";
-import { NodeCard, type LineageFlowNode, type LineageRole } from "./NodeCard";
-import { kindName } from "./kinds";
-import { layeredLayout, NODE_HEIGHT, NODE_WIDTH, type Point } from "@/lib/layout";
+import { RotateCcw } from "lucide-react";
+import { NodeCard, type LineageFlowNode, type LineageRole, type PathRole } from "./NodeCard";
+import { kindColor, kindName } from "./kinds";
+import { lineagePath, layeredLayout, NODE_HEIGHT, NODE_WIDTH, type Point } from "@/lib/layout";
+import { setHighlight, useHighlight } from "@/lib/highlight";
 import type { GraphEdge, GraphNode } from "@/lib/types";
 import type { Selection } from "@/components/workspace/useWorkspace";
 
@@ -23,11 +27,15 @@ const nodeTypes = { lineage: NodeCard };
 
 const EDGE_IDLE = "#7A8394";
 const EDGE_SELECTED = "#4F46E5";
+const EDGE_UPSTREAM = "#0F9488";
+const EDGE_DOWNSTREAM = "#4F46E5";
 
 /** Lowest zoom at which node names stay legible in the initial view. */
 const READABLE_ZOOM = 0.6;
 /** Lowest zoom the Fit overview and manual zoom-out may reach. */
 const OVERVIEW_ZOOM = 0.1;
+
+const NO_OVERRIDES = new Map<string, Point>();
 
 function graphBounds(positions: Map<string, Point>): { width: number; height: number } {
   let minX = Number.POSITIVE_INFINITY;
@@ -51,8 +59,10 @@ export interface LineageCanvasProps {
   unresolvedIds: Set<string>;
   selection: Selection | null;
   centerRequest: { id: string; nonce: number } | null;
+  focusId: string | null;
   fitNonce: number;
   onSelectNode: (id: string) => void;
+  onNavigateNode: (id: string) => void;
   onFocusNode: (id: string) => void;
   onSelectEdge: (id: string) => void;
   onClearSelection: () => void;
@@ -60,7 +70,7 @@ export interface LineageCanvasProps {
 
 /** Lineage canvas. Layout is a deterministic layered placement; the camera follows selection. */
 export function LineageCanvas(props: LineageCanvasProps) {
-  const { nodes, edges, roles, unresolvedIds, selection } = props;
+  const { nodes, edges, roles, unresolvedIds, selection, onNavigateNode } = props;
 
   const positions = useMemo(() => layeredLayout(nodes, edges), [nodes, edges]);
   const signature = useMemo(() => nodes.map((node) => node.id).join("|"), [nodes]);
@@ -70,54 +80,134 @@ export function LineageCanvas(props: LineageCanvasProps) {
     return nodes.filter((node) => !targets.has(node.id)).map((node) => node.id);
   }, [nodes, edges]);
 
+  // Dragged positions belong to the graph they were made in; a new node set starts from the layout again.
+  const [dragged, setDragged] = useState<{ signature: string; points: Map<string, Point> } | null>(null);
+  const overrides = dragged?.signature === signature ? dragged.points : NO_OVERRIDES;
+
+  const onNodesChange = (changes: NodeChange<LineageFlowNode>[]) => {
+    const moves = changes.filter((change) => change.type === "position" && change.position);
+    if (moves.length === 0) return;
+    const points = new Map(overrides);
+    for (const change of moves) {
+      if (change.type === "position" && change.position) points.set(change.id, change.position);
+    }
+    setDragged({ signature, points });
+  };
+
+  const [hoveredEdge, setHoveredEdge] = useState<string | null>(null);
+  const highlight = useHighlight();
+  useEffect(() => () => setHighlight(null), []);
+
+  // A hover previews; otherwise the selected node's lineage stays lit.
+  // A hovered node can vanish under the pointer (trace, filter) without a mouseleave, so check it is still drawn.
+  const hoverId = highlight?.type === "node" && nodes.some((node) => node.id === highlight.id) ? highlight.id : null;
+  const litKind = highlight?.type === "kind" ? highlight.kind : null;
+  const litId = hoverId ?? (!litKind && selection?.kind === "node" ? selection.id : null);
+
+  const path = useMemo(() => (litId ? lineagePath(litId, edges) : null), [litId, edges]);
+  // A node with no lineage has nothing to light up, so the rest of the graph stays readable.
+  const hasLitNode =
+    !!litId && !!path && path.upstream.size + path.downstream.size > 0 && nodes.some((node) => node.id === litId);
+  const selectedEdge = selection?.kind === "edge" ? edges.find((edge) => edge.id === selection.id) : undefined;
+
   const flowNodes = useMemo<LineageFlowNode[]>(
     () =>
       nodes.map((node) => {
-        const position = positions.get(node.id) ?? { x: 0, y: 0 };
+        const position = overrides.get(node.id) ?? positions.get(node.id) ?? { x: 0, y: 0 };
         const selected = selection?.kind === "node" && selection.id === node.id;
+        let pathRole: PathRole = null;
+        if (litKind) pathRole = node.kind === litKind ? null : "dim";
+        else if (hasLitNode && path) {
+          if (node.id === litId) pathRole = "self";
+          else if (path.upstream.has(node.id)) pathRole = "upstream";
+          else if (path.downstream.has(node.id)) pathRole = "downstream";
+          else pathRole = "dim";
+        } else if (selectedEdge && node.id !== selectedEdge.source && node.id !== selectedEdge.target) {
+          pathRole = "dim";
+        }
         return {
           id: node.id,
           type: "lineage",
           position,
           width: NODE_WIDTH,
           height: NODE_HEIGHT,
-          draggable: false,
           selected,
           ariaLabel: `${kindName(node.kind)} ${node.name}`,
           data: {
             node,
             role: roles.get(node.id) ?? null,
+            path: pathRole,
             unresolved: unresolvedIds.has(node.id),
             selected,
           },
         };
       }),
-    [nodes, positions, roles, unresolvedIds, selection],
+    [nodes, positions, overrides, roles, unresolvedIds, selection, litId, litKind, hasLitNode, path, selectedEdge],
   );
 
   const flowEdges = useMemo<Edge[]>(
     () =>
       edges.map((edge) => {
         const selected = selection?.kind === "edge" && selection.id === edge.id;
-        const color = selected ? EDGE_SELECTED : EDGE_IDLE;
+        const hovered = hoveredEdge === edge.id;
+        const onPath = hasLitNode && !!path && (path.upstreamEdges.has(edge.id) || path.downstreamEdges.has(edge.id));
+        const direct = onPath && (edge.source === litId || edge.target === litId);
+        let color = EDGE_IDLE;
+        if (selected || hovered) color = EDGE_SELECTED;
+        else if (onPath && path) color = path.upstreamEdges.has(edge.id) ? EDGE_UPSTREAM : EDGE_DOWNSTREAM;
+        const dimmed =
+          !selected &&
+          !hovered &&
+          (litKind !== null || (hasLitNode && !onPath) || (!!selectedEdge && selectedEdge.id !== edge.id));
+        const showLabel = selected || hovered || direct;
         return {
           id: edge.id,
           source: edge.source,
           target: edge.target,
           type: "smoothstep",
           selected,
-          interactionWidth: 14,
-          label: selected ? edge.kind.replace(/_/g, " ").toLowerCase() : undefined,
+          animated: onPath,
+          interactionWidth: 16,
+          label: showLabel ? edge.kind.replace(/_/g, " ").toLowerCase() : undefined,
+          labelStyle: { fontSize: 10, fontWeight: 500, fill: color },
+          labelBgStyle: { fill: "#fff", stroke: "#E1E4EA", strokeWidth: 1 },
+          labelBgPadding: [5, 2] as [number, number],
+          labelBgBorderRadius: 4,
           markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color },
           style: {
             stroke: color,
-            strokeWidth: selected ? 2 : 1.5,
+            strokeWidth: selected || hovered || onPath ? 2 : 1.5,
             strokeDasharray: edge.kind === "RESOLVES_TO" ? "5 4" : undefined,
+            opacity: dimmed ? 0.14 : 1,
+            transition: "opacity 120ms ease, stroke 120ms ease",
           },
         };
       }),
-    [edges, selection],
+    [edges, selection, hoveredEdge, hasLitNode, path, litId, litKind, selectedEdge],
   );
+
+  // Arrow keys walk the graph: left/right follow edges, up/down move within the column.
+  const graphRef = useRef({ nodes, edges, positions, overrides, selection, entryIds, onNavigateNode });
+  useEffect(() => {
+    graphRef.current = { nodes, edges, positions, overrides, selection, entryIds, onNavigateNode };
+  });
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey || document.querySelector("dialog[open]")) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      if (target?.closest(".inspector, .rail, [role='slider'], [role='separator']")) return;
+      const graph = graphRef.current;
+      const next = nextNode(event.key, graph);
+      // Capture phase: stops React Flow from also nudging a keyboard-focused node.
+      event.preventDefault();
+      event.stopPropagation();
+      if (next) graph.onNavigateNode(next);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
 
   return (
     <div className="lineage-root" role="group" aria-label="Lineage graph">
@@ -127,13 +217,21 @@ export function LineageCanvas(props: LineageCanvasProps) {
         nodeTypes={nodeTypes}
         minZoom={0.1}
         maxZoom={2}
-        nodesDraggable={false}
         nodesConnectable={false}
         deleteKeyCode={null}
+        zoomOnDoubleClick={false}
         onlyRenderVisibleElements
+        onNodesChange={onNodesChange}
         onNodeClick={(_, node) => props.onSelectNode(node.id)}
-        onNodeDoubleClick={(_, node) => props.onFocusNode(node.id)}
+        onNodeDoubleClick={(_, node) => {
+          setHighlight(null);
+          props.onFocusNode(node.id);
+        }}
+        onNodeMouseEnter={(_, node) => setHighlight({ type: "node", id: node.id })}
+        onNodeMouseLeave={() => setHighlight(null)}
         onEdgeClick={(_, edge) => props.onSelectEdge(edge.id)}
+        onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
+        onEdgeMouseLeave={() => setHoveredEdge(null)}
         onPaneClick={props.onClearSelection}
       >
         <Camera
@@ -142,6 +240,7 @@ export function LineageCanvas(props: LineageCanvasProps) {
           signature={signature}
           fitNonce={props.fitNonce}
           centerRequest={props.centerRequest}
+          focusId={props.focusId}
         />
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} color="#D8DCE4" />
         <Controls position="bottom-right" showInteractive={false} />
@@ -150,14 +249,58 @@ export function LineageCanvas(props: LineageCanvasProps) {
           pannable
           zoomable
           maskColor="rgba(246, 247, 249, 0.7)"
-          nodeColor={(node) => (node.selected ? EDGE_SELECTED : "#CBD0DA")}
+          nodeColor={(node) => {
+            const data = (node as LineageFlowNode).data;
+            if (node.selected) return EDGE_SELECTED;
+            return data?.node ? `${kindColor(data.node.kind)}80` : "#CBD0DA";
+          }}
           nodeStrokeWidth={2}
           style={{ width: 150, height: 96 }}
           ariaLabel="Graph minimap"
         />
+        {overrides.size > 0 ? (
+          <Panel position="bottom-center">
+            <button type="button" className="btn small canvas-action" onClick={() => setDragged(null)}>
+              <RotateCcw className="icon" aria-hidden="true" />
+              Reset layout
+            </button>
+          </Panel>
+        ) : null}
       </ReactFlow>
     </div>
   );
+}
+
+function nextNode(
+  key: string,
+  graph: {
+    nodes: GraphNode[];
+    edges: GraphEdge[];
+    positions: Map<string, Point>;
+    overrides: Map<string, Point>;
+    selection: Selection | null;
+    entryIds: string[];
+  },
+): string | null {
+  const { nodes, edges, positions, overrides, selection, entryIds } = graph;
+  const at = (id: string) => overrides.get(id) ?? positions.get(id) ?? { x: 0, y: 0 };
+  const current = selection?.kind === "node" && nodes.some((node) => node.id === selection.id) ? selection.id : null;
+  if (!current) return entryIds[0] ?? nodes[0]?.id ?? null;
+  const origin = at(current);
+
+  // Candidates are ranked nearest first, so a key press lands on what the eye expects.
+  const nearest = (ids: string[]) =>
+    ids.sort((a, b) => Math.abs(at(a).y - origin.y) - Math.abs(at(b).y - origin.y) || a.localeCompare(b))[0] ?? null;
+
+  if (key === "ArrowLeft") return nearest(edges.filter((edge) => edge.target === current).map((edge) => edge.source));
+  if (key === "ArrowRight") return nearest(edges.filter((edge) => edge.source === current).map((edge) => edge.target));
+
+  const sign = key === "ArrowUp" ? -1 : 1;
+  const column = nodes
+    .map((node) => node.id)
+    .filter((id) => id !== current && Math.abs(at(id).x - origin.x) < NODE_WIDTH / 2)
+    .filter((id) => (at(id).y - origin.y) * sign > 0);
+  return nearest(column);
 }
 
 interface CameraProps {
@@ -166,17 +309,18 @@ interface CameraProps {
   signature: string;
   fitNonce: number;
   centerRequest: { id: string; nonce: number } | null;
+  focusId: string | null;
 }
 
 /**
  * Child of ReactFlow so it can use the viewport API. Renders nothing.
  *
  * Initial view (new graph or filter): the whole graph when it reads at or above
- * READABLE_ZOOM; otherwise the entry nodes at readable zoom, so text stays legible
- * and the rest is reached by panning. The Fit button always shows the full overview.
+ * READABLE_ZOOM; otherwise the traced node, or without a trace the entry nodes, at
+ * readable zoom, so text stays legible and the rest is reached by panning. The Fit button always shows the full overview.
  */
-function Camera({ positions, entryIds, signature, fitNonce, centerRequest }: CameraProps) {
-  const { fitView, setCenter, getZoom } = useReactFlow();
+function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focusId }: CameraProps) {
+  const { fitView, setCenter, getZoom, getNode } = useReactFlow();
   const width = useStore((state) => state.width);
   const height = useStore((state) => state.height);
 
@@ -194,8 +338,9 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest }: Cam
         void fitView({ padding: 0.2, duration: 200, maxZoom: 1.1, minZoom: READABLE_ZOOM });
         return;
       }
+      const anchors = focusId && positions.has(focusId) ? [focusId] : entryIds;
       void fitView({
-        nodes: entryIds.map((id) => ({ id })),
+        nodes: anchors.map((id) => ({ id })),
         padding: 0.2,
         duration: 200,
         maxZoom: 1.1,
@@ -218,13 +363,14 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest }: Cam
 
   useEffect(() => {
     if (!centerRequest) return;
-    const point = positions.get(centerRequest.id);
+    // The live node position, so a dragged node is centered where it now sits.
+    const point = getNode(centerRequest.id)?.position ?? positions.get(centerRequest.id);
     if (!point) return;
     void setCenter(point.x + NODE_WIDTH / 2, point.y + NODE_HEIGHT / 2, {
       zoom: Math.max(getZoom(), 0.9),
       duration: 220,
     });
-  }, [centerRequest, positions, setCenter, getZoom]);
+  }, [centerRequest, positions, setCenter, getZoom, getNode]);
 
   return null;
 }

@@ -32,9 +32,9 @@ const RECENT_LIMIT = 6;
 const ENV_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 
 export type Scope = "repo" | "all";
-export type InspectorTab = "evidence" | "details" | "mapping";
+export type InspectorTab = "evidence" | "links" | "details" | "mapping";
 export type ToastTone = "ok" | "bad" | "info";
-export type DialogName = "settings" | "browse" | "run" | "coverage";
+export type DialogName = "settings" | "browse" | "run" | "coverage" | "palette" | "shortcuts";
 
 export interface Selection {
   kind: "node" | "edge";
@@ -79,6 +79,7 @@ export function useWorkspaceState() {
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
   const [staticNoticeDismissed, setStaticNoticeDismissed] = useState(false);
   const [focus, setFocusState] = useState<Focus | null>(null);
+  const [focusTrail, setFocusTrail] = useState<string[]>([]);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("evidence");
   const [mappingSymbol, setMappingSymbol] = useState<string | null>(null);
@@ -285,6 +286,7 @@ export function useWorkspaceState() {
 
   const resetView = useCallback(() => {
     setFocusState(null);
+    setFocusTrail([]);
     setSelection(null);
     setCenterRequest(null);
   }, []);
@@ -382,7 +384,8 @@ export function useWorkspaceState() {
     (id: string) => {
       setSelection({ kind: "node", id });
       showInspector();
-      setInspectorTab("evidence");
+      // Walking node to node keeps the tab being read; only Mapping is tied to a specific symbol.
+      setInspectorTab((tab) => (tab === "mapping" ? "evidence" : tab));
     },
     [showInspector],
   );
@@ -391,7 +394,7 @@ export function useWorkspaceState() {
     (id: string) => {
       setSelection({ kind: "edge", id });
       showInspector();
-      setInspectorTab("evidence");
+      setInspectorTab((tab) => (tab === "mapping" ? "evidence" : tab));
     },
     [showInspector],
   );
@@ -402,13 +405,24 @@ export function useWorkspaceState() {
     (id: string | null, direction: TraceDirection = "both") => {
       if (!id) {
         setFocusState(null);
+        setFocusTrail([]);
         return;
       }
       setFocusState({ id, direction });
+      setFocusTrail((trail) => {
+        // Returning to a node already on the trail rewinds to it instead of growing a loop.
+        const at = trail.indexOf(id);
+        return at >= 0 ? trail.slice(0, at + 1) : [...trail, id];
+      });
       setSelection({ kind: "node", id });
     },
     [],
   );
+
+  const focusBack = useCallback(() => {
+    const previous = focusTrail[focusTrail.length - 2];
+    if (previous) setFocus(previous, focus?.direction ?? "both");
+  }, [focus, focusTrail, setFocus]);
 
   const setDirection = useCallback((direction: TraceDirection) => {
     setFocusState((prev) => (prev ? { ...prev, direction } : prev));
@@ -551,6 +565,8 @@ export function useWorkspaceState() {
     setHiddenKinds,
     focus,
     setFocus,
+    focusTrail,
+    focusBack,
     setDirection,
     trace,
     selection,

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Play, X } from "lucide-react";
+import { ChevronDown, Play, X } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { StatusLine } from "@/components/shell/StatusLine";
 import { StatusChip } from "./StatusChip";
@@ -9,11 +9,17 @@ import { analysisModeOf, isActive, JOB_MODE_LABEL } from "@/lib/jobs";
 import { relativeTime, shortId } from "@/lib/format";
 import type { Job } from "@/lib/types";
 
+const RECENT_JOBS = 3;
+
 /** Jobs section: run analysis, list jobs, poll progress, cancel with inline confirm. */
 export function JobList() {
   const ws = useWorkspace();
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [showAll, setShowAll] = useState(false);
+  // Active work always stays in view; finished jobs collapse so Mappings stays reachable.
+  const shownJobs = showAll ? ws.jobList : ws.jobList.filter((job, index) => index < RECENT_JOBS || isActive(job));
+  const hiddenJobs = ws.jobList.length - shownJobs.length;
 
   const runDisabled = ws.repos.data === null || ws.repoList.length === 0 || !ws.repoId || ws.scope === "all";
   const runTitle =
@@ -62,7 +68,7 @@ export function JobList() {
         </div>
       ) : null}
 
-      {ws.jobList.map((job) => (
+      {shownJobs.map((job) => (
         <JobRow
           key={job.id}
           job={job}
@@ -80,6 +86,12 @@ export function JobList() {
           onToggleExpanded={() => toggleExpanded(job.id)}
         />
       ))}
+      {hiddenJobs > 0 ? (
+        <button type="button" className="btn ghost small block" onClick={() => setShowAll(true)}>
+          <ChevronDown className="icon" aria-hidden="true" />
+          Show {hiddenJobs} older
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -125,9 +137,6 @@ function JobRow(props: JobRowProps) {
           <span className="chip tag" title="Environment">
             {job.environment}
           </span>
-          <span className="muted" title={job.updated_at}>
-            {relativeTime(job.updated_at)}
-          </span>
         </span>
       </div>
 
@@ -139,18 +148,23 @@ function JobRow(props: JobRowProps) {
         <span>
           {total > 0 ? `${job.processed_files}/${total} files` : active ? "Waiting for worker" : "No file count"}
         </span>
+        <span style={{ marginLeft: "auto", whiteSpace: "nowrap" }} title={job.updated_at}>
+          {relativeTime(job.updated_at)}
+        </span>
       </div>
 
-      <div
-        className={progressClass}
-        role="progressbar"
-        aria-label={`Analysis progress ${percent}%`}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-      >
-        <span style={{ width: `${percent}%` }} />
-      </div>
+      {job.status !== "completed" ? (
+        <div
+          className={progressClass}
+          role="progressbar"
+          aria-label={`Analysis progress ${percent}%`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+        >
+          <span style={{ width: `${percent}%` }} />
+        </div>
+      ) : null}
 
       {error ? (
         <div className="row-meta" style={{ color: "var(--red-700)", whiteSpace: "normal", alignItems: "flex-start" }}>

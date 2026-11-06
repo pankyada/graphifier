@@ -10,6 +10,8 @@ import { ResizeHandle } from "@/components/shell/ResizeHandle";
 import { Toasts } from "@/components/shell/Toasts";
 import { StatusBanners } from "@/components/shell/StatusBanners";
 import { SettingsDialog } from "@/components/shell/SettingsDialog";
+import { CommandPalette } from "@/components/shell/CommandPalette";
+import { ShortcutsDialog } from "@/components/shell/ShortcutsDialog";
 import { MainPane } from "@/components/graph/MainPane";
 import { CoverageDialog } from "@/components/graph/CoverageDialog";
 import { FolderBrowserDialog } from "@/components/repos/FolderBrowserDialog";
@@ -33,9 +35,15 @@ function WorkspaceShell() {
     wsRef.current = ws;
   });
 
-  // Keyboard: / search, ] inspector, f fit, u/d focus upstream/downstream, Esc clear.
+  // Keyboard: Cmd+K or / palette, [ ] panels, f fit, u/d/b trace, Backspace back, ? help, Esc clear.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (wsRef.current.dialog === "palette") wsRef.current.closeDialog();
+        else if (!document.querySelector("dialog[open]")) wsRef.current.openDialog("palette");
+        return;
+      }
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
       if (document.querySelector("dialog[open]")) return;
       const target = event.target as HTMLElement | null;
@@ -51,9 +59,15 @@ function WorkspaceShell() {
       switch (event.key) {
         case "/": {
           event.preventDefault();
-          document.getElementById("global-search")?.focus();
+          current.openDialog("palette");
           break;
         }
+        case "?":
+          current.openDialog("shortcuts");
+          break;
+        case "[":
+          current.toggleRail();
+          break;
         case "]":
           current.toggleInspector();
           break;
@@ -62,9 +76,13 @@ function WorkspaceShell() {
           break;
         case "u":
         case "d":
+        case "b":
           if (current.selection?.kind === "node") {
-            current.setFocus(current.selection.id, event.key === "u" ? "in" : "out");
+            current.setFocus(current.selection.id, event.key === "u" ? "in" : event.key === "d" ? "out" : "both");
           }
+          break;
+        case "Backspace":
+          current.focusBack();
           break;
         default:
           break;
@@ -133,7 +151,9 @@ function WorkspaceShell() {
           Snapshot graph: {visibleNodes} nodes · {visibleEdges} edges
         </span>
         <span className="topbar-spacer" style={{ flex: 1 }} />
-        <span className="hide-small">Keys: / search · ] inspector · f fit · u/d upstream/downstream · Esc clear</span>
+        <button type="button" className="statusbar-link hide-small" onClick={() => ws.openDialog("shortcuts")}>
+          Keyboard shortcuts <span className="kbd">?</span>
+        </button>
       </footer>
 
       <Toasts />
@@ -141,6 +161,8 @@ function WorkspaceShell() {
       <FolderBrowserDialog />
       <RunAnalysisDialog />
       <CoverageDialog />
+      <CommandPalette />
+      <ShortcutsDialog />
     </div>
   );
 }
