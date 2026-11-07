@@ -5,8 +5,10 @@ import { Ban, CircleAlert, CircleCheckBig, CircleDashed } from "lucide-react";
 const LABELS: Record<string, string> = {
   queued: "Queued",
   running: "Running",
+  cloning: "Cloning",
   completed: "Completed",
   failed: "Failed",
+  interrupted: "Interrupted",
   cancelled: "Cancelled",
 };
 
@@ -14,7 +16,7 @@ const KNOWN = new Set(Object.keys(LABELS));
 
 /** Job status chip. Always shows text and an icon, never colour alone. */
 export function StatusChip({ status, cancelling = false }: { status: string; cancelling?: boolean }) {
-  const key = KNOWN.has(status) ? status : "queued";
+  const key = status === "interrupted" ? "failed" : status === "cloning" ? "running" : KNOWN.has(status) ? status : "queued";
   const label = cancelling ? "Cancelling…" : (LABELS[status] ?? status);
   const Icon = key === "completed" ? CircleCheckBig : key === "failed" ? CircleAlert : key === "cancelled" ? Ban : key === "running" ? null : CircleDashed;
   return (

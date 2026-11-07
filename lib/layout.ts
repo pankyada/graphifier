@@ -6,6 +6,7 @@ export const NODE_HEIGHT = 64;
 
 const COLUMN_GAP = 72;
 const ROW_GAP = 20;
+const MAX_LAYER_ROWS = 10;
 
 export interface Point {
   x: number;
@@ -108,15 +109,24 @@ export function layeredLayout(nodes: GraphNode[], edges: GraphEdge[]): Map<strin
     layer.forEach((id, index) => position.set(id, index));
   }
 
-  const tallest = Math.max(1, ...layers.map((layer) => layer.length));
+  // A very long layer wraps into adjacent columns, so wide screens are used instead of one tall strip.
+  const rowsIn = (count: number) => Math.min(count, MAX_LAYER_ROWS);
+  const tallest = Math.max(1, ...layers.map((layer) => rowsIn(layer.length)));
   const out = new Map<string, Point>();
   const stride = NODE_HEIGHT + ROW_GAP;
-  layers.forEach((layer, r) => {
-    const offset = ((tallest - layer.length) * stride) / 2;
-    layer.forEach((id, index) => {
-      out.set(id, { x: r * (NODE_WIDTH + COLUMN_GAP), y: offset + index * stride });
-    });
-  });
+  const columnStride = NODE_WIDTH + COLUMN_GAP;
+  let column = 0;
+  for (const layer of layers) {
+    const wraps = Math.max(1, Math.ceil(layer.length / MAX_LAYER_ROWS));
+    for (let wrap = 0; wrap < wraps; wrap += 1) {
+      const chunk = layer.slice(wrap * MAX_LAYER_ROWS, (wrap + 1) * MAX_LAYER_ROWS);
+      const offset = ((tallest - chunk.length) * stride) / 2;
+      chunk.forEach((id, index) => {
+        out.set(id, { x: (column + wrap) * columnStride, y: offset + index * stride });
+      });
+    }
+    column += wraps;
+  }
   return out;
 }
 

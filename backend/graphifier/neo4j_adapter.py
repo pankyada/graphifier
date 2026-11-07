@@ -8,6 +8,40 @@ import os
 from .graph import build_graph
 
 
+def hierarchy_export(graph):
+    """Export the complete evidence graph plus its rebuildable semantic layers.
+
+    Test code stays in storage/export; hiding it is a browsing preference only.
+    Membership uses explicit relationships; rollups retain supporting edge IDs.
+    """
+    from .hierarchy import build_hierarchy
+    proposal = None
+    if graph.get("snapshots"):
+        from .db import connect
+        from .graph_store import load_ai_proposals
+        with connect() as c:
+            proposal, _ = load_ai_proposals(c, graph["snapshots"])
+    try:
+        hierarchy = build_hierarchy(graph, proposal=proposal)
+    except (ValueError, TypeError, KeyError):
+        hierarchy = build_hierarchy(graph)
+    groups = hierarchy["groups"]
+    nodes = list(graph["nodes"]) + groups
+    edges = list(graph["edges"]) + list(hierarchy["rollup_edges"])
+    for member in hierarchy["memberships"]:
+        source, target = member["group_id"], member["node_id"]
+        edges.append({"id": "membership:" + hashlib.sha256((source + "\0" + target).encode()).hexdigest()[:24],
+                      "source": source, "target": target, "kind": "GROUP_CONTAINS",
+                      "attributes": {"derived": True, "method": "hierarchy"}, "evidence": []})
+    for group in groups:
+        parent = group.get("attributes", {}).get("parent_id")
+        if parent:
+            edges.append({"id": "group-parent:" + group["id"], "source": parent,
+                          "target": group["id"], "kind": "GROUP_CONTAINS",
+                          "attributes": {"derived": True, "method": "hierarchy"}, "evidence": []})
+    return {**graph, "nodes": nodes, "edges": edges}
+
+
 def _projection_id(system: str, environment: str | None, repo_id: str | None) -> str:
     scope = "\0".join((system, environment or "*", repo_id or "*"))
     return hashlib.sha256(scope.encode("utf-8")).hexdigest()
@@ -21,7 +55,8 @@ def sync_repo(repo_id: str | None = None, environment: str | None = None):
         raise RuntimeError("Neo4j integration is not installed") from exc
     uri=os.environ.get("NEO4J_URI"); user=os.environ.get("NEO4J_USER"); password=os.environ.get("NEO4J_PASSWORD")
     if not uri or not user or not password: raise RuntimeError("Neo4j is not configured")
-    graph=build_graph(repo_id=repo_id,environment=environment)
+    graph=build_graph(repo_id=repo_id,environment=environment,include_tests=True)
+    graph=hierarchy_export(graph)
     system=graph.get("system") or os.environ.get("GRAPHIFIER_SYSTEM","local-workspace")
     projection_id=_projection_id(system,environment,repo_id)
     nodes=[{"id":str(n.get("id")),"kind":str(n.get("kind","unknown")),"name":str(n.get("name","")),"expression":n.get("expression"),"attributes_json":json.dumps(n.get("attributes",{}),ensure_ascii=False),"evidence_json":json.dumps(n.get("evidence",[]),ensure_ascii=False),"repositories_json":json.dumps(n.get("repositories",[]),ensure_ascii=False),"snapshots_json":json.dumps(n.get("snapshots",[]),ensure_ascii=False)} for n in graph["nodes"]]

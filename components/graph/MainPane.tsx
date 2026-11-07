@@ -1,18 +1,17 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, ArrowLeftRight, ArrowRight, ChevronRight, Crosshair, Maximize, Minus, Play, Plus, RefreshCw, TriangleAlert, X } from "lucide-react";
+import { ArrowLeft, ArrowLeftRight, ArrowRight, ChevronRight, Crosshair, Minus, Play, Plus, RefreshCw, X } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
-import { isNarrowViewport, LARGE_GRAPH_THRESHOLD } from "@/components/workspace/useWorkspace";
+import { isNarrowViewport } from "@/components/workspace/useWorkspace";
 import { Onboarding } from "@/components/repos/Onboarding";
 import { isSymbolicExpression } from "@/lib/explain";
 import { traceDepths, traceSides } from "@/lib/layout";
-import type { TraceDirection } from "@/lib/types";
+import type { GraphGranularity, TraceDirection } from "@/lib/types";
 import { LineageCanvas } from "./LineageCanvas";
-import { FocusList } from "./FocusList";
+import { pickHubs } from "./hubs";
 import { displayName } from "./kinds";
 import { GuidedHint } from "./GuidedHint";
-import { KindLegend } from "./KindLegend";
 import type { LineageRole } from "./NodeCard";
 import { ApiDown } from "@/components/shell/ApiDown";
 import { StatusLine } from "@/components/shell/StatusLine";
@@ -23,6 +22,12 @@ const DIRECTIONS: { value: TraceDirection; label: string; icon: typeof ArrowLeft
   { value: "both", label: "Both", icon: ArrowLeftRight },
   { value: "out", label: "Downstream", icon: ArrowRight },
 ];
+
+const DETAIL_HINTS: Record<GraphGranularity, string> = {
+  overview: "Architecture groups, observed responsibilities and consolidated dependencies. Open a group to explore its contents.",
+  interfaces: "Modules and implementation components within the selected scope, with their external connections.",
+  detail: "Detailed implementation and lineage within this scope. Test visibility and display limits still apply.",
+};
 
 /** Routes the main area between onboarding, API errors, loading and the graph. */
 export function MainPane() {
@@ -48,7 +53,7 @@ export function MainPane() {
       <div className="center-state">
         <div className="card">
           <p className="card-title">Select a repository</p>
-          <p className="card-text">Pick a repository in the left rail, or switch to All repos for the aggregate graph.</p>
+          <p className="card-text">Pick a repository in the scope switcher, or choose All repositories for the aggregate graph.</p>
         </div>
       </div>
     );
@@ -82,17 +87,31 @@ function GraphPane() {
   );
   const maxDepth = depths ? Math.max(0, ...depths.values()) : 0;
 
-  const { visibleNodes, visibleEdges } = useMemo(() => {
-    const baseNodes = focusTrace ? focusTrace.nodes : allNodes;
+  const selectedNodeId = ws.selection?.kind === "node" ? ws.selection.id : null;
+
+  const [canvasLimit, setCanvasLimit] = useState<number | "all">(ws.graphGranularity === "detail" ? 100 : "all");
+  useEffect(() => { setCanvasLimit(ws.graphGranularity === "detail" ? 100 : "all"); }, [ws.graphGranularity, ws.hierarchyScope, ws.repoId]);
+
+  const { visibleNodes, visibleEdges, hubsOnly } = useMemo(() => {
     const baseEdges = focusTrace ? focusTrace.edges : allEdges;
-    const nodes = baseNodes.filter(
+    let baseNodes = focusTrace ? focusTrace.nodes : allNodes;
+    if (focusTrace && focusId) {
+      // A "both" trace can arrive with side branches reached through shared parents. Lineage is only
+      // what flows into or out of the focus, so keep the directed reach.
+      const sides = traceSides(focusId, focusTrace.edges);
+      baseNodes = baseNodes.filter((node) => node.id === focusId || sides.upstream.has(node.id) || sides.downstream.has(node.id));
+    }
+    const filtered = baseNodes.filter(
       (node) =>
         !ws.hiddenKinds.has(node.kind) && (depth === null || !depths || (depths.get(node.id) ?? 0) <= depth),
     );
+    // Too many nodes to read at once: open on the most-connected ones.
+    const capped = !focusTrace && canvasLimit !== "all" && filtered.length > canvasLimit;
+    const nodes = capped ? pickHubs(filtered, baseEdges, selectedNodeId ?? focusId, canvasLimit) : filtered;
     const ids = new Set(nodes.map((node) => node.id));
     const edges = baseEdges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
-    return { visibleNodes: nodes, visibleEdges: edges };
-  }, [focusTrace, allNodes, allEdges, ws.hiddenKinds, depth, depths]);
+    return { visibleNodes: nodes, visibleEdges: edges, hubsOnly: capped };
+  }, [focusTrace, focusId, allNodes, allEdges, ws.hiddenKinds, depth, depths, selectedNodeId, canvasLimit]);
 
   const roles = useMemo(() => {
     const map = new Map<string, Exclude<LineageRole, null>>();
@@ -103,13 +122,6 @@ function GraphPane() {
     map.set(ws.focus.id, "focus");
     return map;
   }, [ws.focus, focusTrace]);
-
-  const scopeRepos = ws.scope === "all" ? ws.repoList : ws.repo ? [ws.repo] : [];
-  const indexedRepoIds = new Set((graph?.snapshots ?? []).map((snapshot) => snapshot.repo_id));
-  const indexedCount = scopeRepos.filter((item) => indexedRepoIds.has(item.id)).length;
-  const warningCount = graph?.warnings.length ?? 0;
-  const latestFailed = ws.latestJob && (ws.latestJob.status === "failed" || ws.latestJob.status === "cancelled");
-  const showFocusList = !ws.focus && allNodes.length > LARGE_GRAPH_THRESHOLD;
 
   if (ws.graph.error && !graph) {
     const offline = ws.graph.status === 0 || ws.graph.status === 503;
@@ -133,30 +145,40 @@ function GraphPane() {
     );
   }
 
-  if (!graph && ws.graph.loading) {
-    return (
-      <div className="center-state">
-        <div className="skeleton-list" aria-busy="true" aria-label="Loading graph">
-          <div className="skeleton" />
-          <div className="skeleton" />
-          <div className="skeleton" />
-          <div className="skeleton" />
-        </div>
-      </div>
-    );
-  }
-
-  const selectedNodeId = ws.selection?.kind === "node" ? ws.selection.id : null;
   // Long trails keep the start and the most recent hops.
   const trail =
     ws.focusTrail.length > 4
       ? [ws.focusTrail[0], ...ws.focusTrail.slice(-3)]
       : ws.focusTrail;
 
+  const showTrace = !!ws.focus || !!selectedNodeId;
+
   const toolbar = (
     <div className={`graph-toolbar${ws.focus ? " has-focus" : ""}`} role="toolbar" aria-label="Lineage toolbar">
+      <div className="toolbar-cluster">
+        <div className="segmented" role="group" aria-label="Graph view">
+          <button type="button" aria-pressed={ws.graphView === "flow"} onClick={() => ws.setGraphView("flow")}>Flow</button>
+          <button type="button" aria-pressed={ws.graphView === "constellation"} onClick={() => ws.setGraphView("constellation")}>Constellation</button>
+        </div>
+        {graph?.ai_hierarchy && graph.ai_hierarchy.status !== "not_requested" ? <div className="segmented" role="group" aria-label="Grouping basis"><button type="button" aria-pressed={ws.hierarchyMode === "ai"} onClick={() => ws.setHierarchyMode("ai")}>AI grouping</button><button type="button" aria-pressed={ws.hierarchyMode === "deterministic"} onClick={() => ws.setHierarchyMode("deterministic")}>Source structure</button></div> : null}
+        <label className="graph-detail-level" title={DETAIL_HINTS[ws.graphGranularity]}>
+          <span className="sr-only">Graph detail level</span>
+          <select className="select" value={ws.graphGranularity} onChange={(event) => ws.setGraphGranularity(event.target.value as GraphGranularity)}>
+            <option value="overview">Architecture</option>
+            <option value="interfaces">Components</option>
+            <option value="detail">Full detail</option>
+          </select>
+        </label>
+      </div>
+
+      <label className="toolbar-cluster" title={focusTrace ? "Loaded trace paths are shown without a canvas cap to preserve intermediate steps." : "Canvas limit only: ranks loaded nodes by connectivity and keeps the selected node visible. All loaded does not fetch the entire repository."}><span>Canvas</span><select className="select" aria-label="Canvas display limit" disabled={!!focusTrace} value={focusTrace ? "all" : canvasLimit} onChange={(event) => setCanvasLimit(event.target.value === "all" ? "all" : Number(event.target.value))}><option value="40">40 nodes</option><option value="100">100 nodes</option><option value="250">250 nodes</option><option value="all">All loaded</option></select></label>
+      <nav className="toolbar-cluster" aria-label="Architecture location">
+        <button className="btn small" onClick={() => ws.openGroup(null)}>All components</button>
+        {(graph?.breadcrumbs ?? []).map((crumb) => <button key={crumb.id} className="btn small" onClick={() => ws.openGroup(crumb.id, crumb.level === "overview" ? "interfaces" : "detail")}>{crumb.name}</button>)}
+      </nav>
+      <label className="toolbar-cluster"><input type="checkbox" checked={ws.includeTests} onChange={(event) => { ws.setIncludeTests(event.target.checked); ws.setFocus(null); }} />Include tests{!ws.includeTests && graph?.counts?.hidden_test_nodes ? ` (${graph.counts.hidden_test_nodes} hidden)` : ""}</label>
       {ws.focus ? (
-        <nav className="focus-trail" aria-label="Focus trail">
+        <nav className="toolbar-cluster focus-trail" aria-label="Focus trail">
           <Crosshair className="icon" aria-hidden="true" />
           {trail.map((id, index) => {
             const node = ws.nodeIndex.get(id);
@@ -181,134 +203,77 @@ function GraphPane() {
             <X className="icon" aria-hidden="true" />
           </button>
         </nav>
-      ) : (
-        <span className="toolbar-hint truncate">
-          {allNodes.length === 0
-            ? "Lineage"
-            : selectedNodeId
-              ? "Pick a direction to trace this node."
-              : "Click a node to inspect it, double-click to trace."}
-        </span>
-      )}
+      ) : null}
 
-      <div className="segmented" role="group" aria-label="Trace direction">
-        {DIRECTIONS.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.value}
-              type="button"
-              aria-label={item.label}
-              aria-pressed={ws.focus?.direction === item.value}
-              disabled={!ws.focus && !selectedNodeId}
-              title={ws.focus || selectedNodeId ? item.label : "Select a node first"}
-              onClick={() => {
-                if (ws.focus) ws.setDirection(item.value);
-                else if (selectedNodeId) ws.setFocus(selectedNodeId, item.value);
-              }}
-            >
-              <Icon className="icon" aria-hidden="true" />
-              <span className="seg-label">{item.label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {ws.focus && maxDepth > 1 ? (
-        <div className="stepper" role="group" aria-label="Trace depth">
-          <button
-            type="button"
-            aria-label="Show fewer hops"
-            disabled={(depth ?? maxDepth) <= 1}
-            onClick={() => setDepth(Math.max(1, (depth ?? maxDepth) - 1))}
-          >
-            <Minus className="icon" aria-hidden="true" />
-          </button>
-          <span aria-live="polite">
-            {depth === null || depth >= maxDepth ? `${maxDepth} hops` : `${depth}/${maxDepth} hops`}
-          </span>
-          <button
-            type="button"
-            aria-label="Show more hops"
-            disabled={depth === null || depth >= maxDepth}
-            onClick={() => setDepth(depth === null || depth + 1 >= maxDepth ? null : depth + 1)}
-          >
-            <Plus className="icon" aria-hidden="true" />
-          </button>
+      {showTrace ? (
+        <div className="toolbar-cluster toolbar-end">
+          <div className="segmented" role="group" aria-label="Trace direction">
+            {DIRECTIONS.map((item) => {
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  aria-label={item.label}
+                  aria-pressed={ws.focus?.direction === item.value}
+                  title={item.label}
+                  onClick={() => {
+                    if (ws.focus) ws.setDirection(item.value);
+                    else if (selectedNodeId) ws.setFocus(selectedNodeId, item.value);
+                  }}
+                >
+                  <Icon className="icon" aria-hidden="true" />
+                  <span className="seg-label">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          {ws.focus && maxDepth > 1 ? (
+            <div className="stepper" role="group" aria-label="Trace depth">
+              <button
+                type="button"
+                aria-label="Show fewer hops"
+                disabled={(depth ?? maxDepth) <= 1}
+                onClick={() => setDepth(Math.max(1, (depth ?? maxDepth) - 1))}
+              >
+                <Minus className="icon" aria-hidden="true" />
+              </button>
+              <span aria-live="polite">
+                {depth === null || depth >= maxDepth ? `${maxDepth} hops` : `${depth}/${maxDepth} hops`}
+              </span>
+              <button
+                type="button"
+                aria-label="Show more hops"
+                disabled={depth === null || depth >= maxDepth}
+                onClick={() => setDepth(depth === null || depth + 1 >= maxDepth ? null : depth + 1)}
+              >
+                <Plus className="icon" aria-hidden="true" />
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
-
-      <button type="button" className="icon-btn" aria-label="Fit graph to view" title="Fit (F)" onClick={ws.fitGraph}>
-        <Maximize className="icon" aria-hidden="true" />
-      </button>
-
-      <span className="toolbar-spacer" />
-
-      <span className="toolbar-counts" aria-live="polite">
-        {ws.hiddenKinds.size > 0 || focusTrace
-          ? `${visibleNodes.length}/${allNodes.length} nodes · ${visibleEdges.length}/${allEdges.length} edges`
-          : `${visibleNodes.length} nodes · ${visibleEdges.length} edges`}
-      </span>
-
-      <button
-        type="button"
-        className={`btn small${indexedCount < scopeRepos.length || warningCount > 0 ? "" : " ghost"}`}
-        onClick={() => ws.openDialog("coverage")}
-        title="Coverage and warnings"
-      >
-        Coverage {indexedCount}/{scopeRepos.length}
-        {warningCount > 0 ? (
-          <span className="coverage-warn" aria-label={`${warningCount} warning${warningCount === 1 ? "" : "s"}`}>
-            <TriangleAlert className="icon" aria-hidden="true" />
-            {warningCount}
-          </span>
-        ) : null}
-      </button>
     </div>
   );
 
-  const notices = (
-    <div className="notice-row">
+  // Only live failures interrupt the canvas. Everything else lives in the attention menu.
+  const errors = (
+    <>
       {ws.graph.error ? <ResourceNotice tone="bad" title="Graph refresh failed" text={ws.graph.error} /> : null}
-      {latestFailed && graph && graph.snapshots.length > 0 ? (
-        <ResourceNotice
-          tone="warn"
-          title={`Latest job ${ws.latestJob?.status}`}
-          text={`${ws.latestJob?.error ? `${ws.latestJob.error}. ` : ""}Showing the last completed snapshot.`}
-        />
-      ) : null}
-      {ws.focus && ws.trace.error ? (
-        <ResourceNotice tone="bad" title="Trace failed" text={ws.trace.error} />
-      ) : null}
-      {focusTrace?.truncated ? (
-        <ResourceNotice
-          tone="warn"
-          title="Trace truncated"
-          text={`Lineage stops at depth ${focusTrace.max_depth}. Narrow the focus to see the rest.`}
-        />
-      ) : null}
-      {focusTrace && focusTrace.unresolved_gaps.length > 0 ? (
-        <ResourceNotice
-          tone="warn"
-          title={`${focusTrace.unresolved_gaps.length} unresolved symbolic reference${focusTrace.unresolved_gaps.length === 1 ? "" : "s"}`}
-          text="Bind them in Mappings to stitch these references to physical datasets."
-        />
-      ) : null}
-      {graph && !ws.staticNoticeDismissed && allNodes.length > 0 ? (
-        <ResourceNotice
-          tone="info"
-          title="Static analysis"
-          text="Shows possible, not proven, runtime lineage."
-          onDismiss={ws.dismissStaticNotice}
-        />
-      ) : null}
-    </div>
+      {ws.focus && ws.trace.error ? <ResourceNotice tone="bad" title="Trace failed" text={ws.trace.error} /> : null}
+    </>
   );
 
-  const showLegend = allNodes.length > 0 && !showFocusList && !(focusTrace && focusTrace.nodes.length === 0);
+  const loadedCount = focusTrace ? focusTrace.nodes.length : allNodes.length;
+  const scopeTotal = !focusTrace ? graph?.counts?.scope_nodes : undefined;
+  const caption = `${visibleNodes.length} shown / ${loadedCount} loaded${scopeTotal !== undefined ? ` · ${scopeTotal} in scope` : ""} · ${visibleEdges.length} visible edges${hubsOnly ? " · canvas limit: most-connected nodes" : ""}${(focusTrace?.truncated ?? graph?.truncated) ? " · server window limited; narrow scope or search to find more" : ""}`;
 
   let body: ReactNode;
-  if (graph && allNodes.length === 0) {
+  if (!graph && ws.graph.loading) {
+    body = <div className="center-state" role="status">Loading graph…</div>;
+  } else if (graph && allNodes.length === 0 && ws.graphQuery) {
+    body = <div className="center-state"><p>No entities match “{ws.graphQuery}”. Try another name or clear the search.</p></div>;
+  } else if (graph && allNodes.length === 0) {
     body = (
       <div className="center-state">
         <div className="card">
@@ -350,8 +315,6 @@ function GraphPane() {
         </div>
       </div>
     );
-  } else if (showFocusList) {
-    body = <FocusList nodes={allNodes} unresolvedIds={unresolvedIds} />;
   } else {
     body = (
       <div className="canvas-wrap">
@@ -367,6 +330,7 @@ function GraphPane() {
           </div>
         ) : (
           <LineageCanvas
+            view={ws.graphView}
             nodes={visibleNodes}
             edges={visibleEdges}
             roles={roles}
@@ -386,6 +350,12 @@ function GraphPane() {
             onClearSelection={ws.clearSelection}
           />
         )}
+        {visibleNodes.length > 0 ? (
+          <span className="canvas-caption" aria-live="polite">
+            {ws.graph.loading ? "Loading… " : ""}
+            {caption}
+          </span>
+        ) : null}
       </div>
     );
   }
@@ -394,8 +364,9 @@ function GraphPane() {
     <div className="main-content">
       <div className="hud">
         {toolbar}
-        {notices}
-        {showLegend ? <KindLegend nodes={focusTrace ? focusTrace.nodes : allNodes} /> : null}
+        {errors}
+        {graph?.ai_hierarchy?.status === "partial" ? <div className="note-line" role="status"><strong>AI grouping is incomplete.</strong> Components without validated AI grouping retain their source structure.{graph.ai_hierarchy.warnings?.length ? <details><summary>Grouping coverage ({graph.ai_hierarchy.warnings.length})</summary><ul>{graph.ai_hierarchy.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details> : null}</div> : null}
+        {ws.graphQuery && graph?.search_matches?.length ? <div className="hierarchy-search" aria-label="Detailed search results">{graph.search_matches.map((match) => <button key={match.node.id} className="btn small" onClick={() => { ws.openGroup(match.ancestors.at(-1) ?? null, "detail", match.node.id); ws.selectNode(match.node.id); ws.centerOn(match.node.id); }}><strong>{match.node.name}</strong><span className="hint">{match.node.kind} · {match.groups.map((group) => group.name).join(" / ")}</span></button>)}</div> : null}
       </div>
       {body}
     </div>

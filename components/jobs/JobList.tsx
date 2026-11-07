@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronDown, Play, X } from "lucide-react";
 import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { StatusLine } from "@/components/shell/StatusLine";
 import { StatusChip } from "./StatusChip";
-import { analysisModeOf, isActive, JOB_MODE_LABEL } from "@/lib/jobs";
+import { activeAnalysisJob, analysisModeOf, canResumeJob, isActive, JOB_MODE_LABEL } from "@/lib/jobs";
 import { relativeTime, shortId } from "@/lib/format";
+import { api } from "@/lib/api";
 import type { Job } from "@/lib/types";
 
 const RECENT_JOBS = 3;
@@ -14,6 +15,23 @@ const RECENT_JOBS = 3;
 /** Jobs section: run analysis, list jobs, poll progress, cancel with inline confirm. */
 export function JobList() {
   const ws = useWorkspace();
+  const resumePending = useRef(new Set<string>());
+  const [resuming, setResuming] = useState<Set<string>>(() => new Set());
+  const resume = async (job: Job) => {
+    if (resumePending.current.has(job.id)) return;
+    resumePending.current.add(job.id);
+    setResuming(new Set(resumePending.current));
+    try {
+      const resumed = await api.resumeJob(job.id);
+      ws.toast("info", `Resume ${resumed.status} for ${ws.repoNames.get(job.repo_id) ?? job.repo_id} (${job.environment}). Saved source and analysis settings will be reused.`);
+    } catch (error) {
+      ws.fail("Could not resume analysis", error);
+    } finally {
+      ws.jobs.reload();
+      resumePending.current.delete(job.id);
+      setResuming(new Set(resumePending.current));
+    }
+  };
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [showAll, setShowAll] = useState(false);
@@ -27,7 +45,7 @@ export function JobList() {
       ? "Select a single repository to run analysis. Analysis is per repository."
       : !ws.repoId
         ? "Select a repository first."
-        : "Run static or Luna agent analysis for this repository";
+        : "Run static or AI harness analysis for this repository";
 
   const toggleExpanded = (id: string) => {
     setExpanded((prev) => {
@@ -74,6 +92,9 @@ export function JobList() {
           job={job}
           repoName={ws.repoNames.get(job.repo_id)}
           showRepo={ws.scope === "all"}
+          resuming={resuming.has(job.id)}
+          resumeBlocked={!!activeAnalysisJob(ws.jobList, job.repo_id, job.environment)}
+          onResume={() => { void resume(job); }}
           cancelling={ws.cancelling.has(job.id) && isActive(job)}
           confirming={confirmId === job.id}
           expanded={expanded.has(job.id)}
@@ -100,6 +121,9 @@ interface JobRowProps {
   job: Job;
   repoName: string | undefined;
   showRepo: boolean;
+  resuming: boolean;
+  resumeBlocked: boolean;
+  onResume: () => void;
   cancelling: boolean;
   confirming: boolean;
   expanded: boolean;
@@ -128,12 +152,13 @@ function JobRow(props: JobRowProps) {
             className="chip tag"
             title={
               mode === "agent"
-                ? "Luna agent: bounded source excerpts sent to the configured model endpoint"
+                ? "AI harness: bounded source excerpts sent to the configured model endpoint"
                 : "Static: parsed locally"
             }
           >
             {JOB_MODE_LABEL[mode]}
           </span>
+          {job.use_ai_hierarchy ? <span className="chip tag" title="Model-assisted architecture grouping and component summaries">AI grouping</span> : null}
           <span className="chip tag" title="Environment">
             {job.environment}
           </span>
@@ -165,6 +190,20 @@ function JobRow(props: JobRowProps) {
           <span style={{ width: `${percent}%` }} />
         </div>
       ) : null}
+
+      {job.checkpoint ? <div className="hint" style={{ overflowWrap: "anywhere" }}>
+        Saved checkpoint: {job.checkpoint.phase === "ai_hierarchy" ? "Generating AI architecture" : job.checkpoint.phase} · {job.checkpoint.completed_files}/{job.checkpoint.total_files} files
+        {job.checkpoint.current_file ? ` · ${job.checkpoint.current_file}` : ""}
+      </div> : null}
+
+      {canResumeJob(job) ? <div>
+        <button type="button" className="btn small" disabled={props.resuming || props.resumeBlocked} onClick={props.onResume}
+          title={props.resumeBlocked ? "An analysis is already active for this repository and environment." : "Continue from saved source and analysis settings. Re-analyse starts a fresh run."}>
+          <Play className="icon" aria-hidden="true" />{props.resuming ? "Resuming…" : "Resume"}
+        </button>
+        <div className="hint">Resume reuses saved source and settings; Re-analyse starts fresh.</div>
+        {props.resumeBlocked ? <div className="hint">Wait for the active run in this repository and environment.</div> : null}
+      </div> : ["failed", "cancelled", "interrupted"].includes(job.status) ? <div className="hint">No resumable checkpoint available. Start a new analysis.</div> : null}
 
       {error ? (
         <div className="row-meta" style={{ color: "var(--red-700)", whiteSpace: "normal", alignItems: "flex-start" }}>

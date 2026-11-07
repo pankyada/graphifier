@@ -15,6 +15,8 @@ export function kindLabel(kind: string): string {
     transformation: "Transformation",
     model: "Model",
     file: "Source file",
+    module: "Module",
+    endpoint: "Endpoint",
   };
   return labels[kind] ?? (kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : "Entity");
 }
@@ -35,7 +37,12 @@ export function explainNode(node: GraphNode, context: NodeContext): string[] {
   const lines: string[] = [];
   const first = node.evidence?.[0];
   const where = first ? ` at ${first.file}:${first.start_line}` : "";
-  lines.push(`${kindLabel(node.kind)} "${node.name}" was found by static parsing${where}.`);
+  const method = node.attributes?.method === "model-inferred"
+    ? node.attributes.also_static ? "static analysis and AI inference" : "AI inference"
+    : node.attributes?.canonical ? "dataset resolution" : "static analysis";
+  lines.push(`${kindLabel(node.kind)} "${node.name}" was found by ${method}${where}.`);
+  if (node.attributes?.entrypoint === true || node.attributes?.entrypoint === "true") lines.push("Detected entrypoint for this application or job.");
+  if (node.attributes?.module) lines.push(`Module: ${String(node.attributes.module)}.`);
 
   if (node.attributes?.canonical === true) {
     const refs = Array.isArray(node.attributes.source_references) ? node.attributes.source_references.length : 0;
@@ -67,8 +74,15 @@ export function explainEdge(edge: GraphEdge, sourceName: string, targetName: str
     const bindings = Array.isArray(edge.attributes?.bindings) ? edge.attributes.bindings.length : 0;
     lines.push(`Applied bindings used: ${bindings}.`);
   } else {
-    lines.push(`"${sourceName}" ${edgeKindLabel(edge.kind)} "${targetName}" according to static parsing.`);
-    lines.push("Static hint only. Not proof of runtime lineage.");
+    const sourceMethods = Array.isArray(edge.attributes?.source_methods) ? edge.attributes.source_methods : [];
+    const method = edge.attributes?.method === "model-inferred" || sourceMethods.includes("model-inferred")
+      ? "AI-assisted source analysis" : "source analysis";
+    lines.push(`"${sourceName}" ${edgeKindLabel(edge.kind)} "${targetName}" according to ${method}.`);
+    if (edge.attributes?.projected || edge.attributes?.derived) lines.push("This connection summarizes a path through hidden intermediate entities. Its evidence retains the underlying source references.");
+    if (edge.kind === "READS") lines.push(`Read source: "${targetName}". Consumer: "${sourceName}".`);
+    if (edge.kind === "WRITES") lines.push(`Write target: "${targetName}". Producer: "${sourceName}".`);
+    if (edge.kind === "DERIVES_FROM") lines.push(`Data dependency flows from "${sourceName}" to "${targetName}".`);
+    lines.push("Source-derived lineage, not proof of runtime execution.");
   }
   return lines;
 }

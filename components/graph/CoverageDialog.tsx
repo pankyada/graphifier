@@ -50,7 +50,7 @@ function CoverageBody() {
         {warnings.length > 0 ? ` ${warnings.length} warning${warnings.length === 1 ? "" : "s"} recorded.` : " No warnings recorded."}
       </p>
       <p className="hint" style={{ margin: 0 }}>
-        Warnings come from static extraction (files that could not be fully parsed) and binding conflicts. Any warning
+        Warnings cover extraction gaps, scan limits, AI analysis coverage and binding conflicts. Any warning
         means coverage for that file may be partial.
       </p>
 

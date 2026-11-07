@@ -4,6 +4,9 @@ import { kindLabel } from "@/lib/explain";
 // Kind -> icon. Unknown kinds fall back to a generic box so new extractor
 // kinds still render. Kinds themselves come from the data, never hard-coded lists.
 const KIND_ICONS: Record<string, LucideIcon> = {
+  architecture: Workflow,
+  component: Box,
+  method: Code,
   dataset: Table2,
   column: Columns3,
   program: Code,
@@ -11,6 +14,10 @@ const KIND_ICONS: Record<string, LucideIcon> = {
   model: Sparkles,
   file: FileText,
   job: Cpu,
+  module: Box,
+  endpoint: Workflow,
+  function: Code,
+  class: Box,
 };
 
 export function kindIcon(kind: string): LucideIcon {
@@ -23,6 +30,9 @@ export function kindName(kind: string): string {
 
 // Hues stay clear of the semantic tokens: amber unresolved, red failed, green upstream, rust downstream.
 const KIND_COLORS: Record<string, string> = {
+  architecture: "#245b75",
+  component: "#995f26",
+  method: "#6d4c9f",
   dataset: "#2f6690",
   column: "#7a756b",
   program: "#6d4c9f",
@@ -30,6 +40,10 @@ const KIND_COLORS: Record<string, string> = {
   model: "#a8437a",
   file: "#8a7f70",
   job: "#5f7a1f",
+  module: "#995f26",
+  endpoint: "#245b75",
+  function: "#6d4c9f",
+  class: "#715a9e",
 };
 
 export function kindColor(kind: string): string {

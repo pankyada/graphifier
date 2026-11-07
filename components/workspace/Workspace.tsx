@@ -14,12 +14,12 @@ import { StatusBanners } from "@/components/shell/StatusBanners";
 import { SettingsDialog } from "@/components/shell/SettingsDialog";
 import { CommandPalette } from "@/components/shell/CommandPalette";
 import { ShortcutsDialog } from "@/components/shell/ShortcutsDialog";
+import { CodeSearchDialog } from "@/components/evidence/CodeSearchDialog";
 import { MainPane } from "@/components/graph/MainPane";
 import { CoverageDialog } from "@/components/graph/CoverageDialog";
 import { FolderBrowserDialog } from "@/components/repos/FolderBrowserDialog";
 import { RunAnalysisDialog } from "@/components/jobs/RunAnalysisDialog";
 
-const RAIL_STRIP_WIDTH = 52;
 const SHEET_MARGIN = 12;
 
 /** Root client shell. Owns global state and renders the grid, dialogs and toasts. */
@@ -97,8 +97,7 @@ function WorkspaceShell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Unpinned, the rail occupies only its icon strip; the panel opens over the canvas.
-  const railWidth = ws.railPinned ? ws.railWidth : RAIL_STRIP_WIDTH;
+  const railWidth = ws.railPinned ? ws.railWidth : 0;
   // The inspector floats over the canvas, so these tell floating controls how far to stay clear of it.
   const sheetOpen = !ws.inspectorHidden;
   const gridVars = {
@@ -114,10 +113,6 @@ function WorkspaceShell() {
     ws.setRailDrawerOpen(false);
     ws.setInspectorDrawerOpen(false);
   };
-
-  const visibleNodes = ws.graph.data?.nodes.length ?? 0;
-  const visibleEdges = ws.graph.data?.edges.length ?? 0;
-  const healthOk = !!ws.health.data && !ws.health.error;
 
   return (
     <div className="app">
@@ -137,8 +132,8 @@ function WorkspaceShell() {
             <button
               type="button"
               className="panel-fab panel-fab-left"
-              aria-label="Open sidebar"
-              title="Open sidebar ([)"
+              aria-label="Show sidebar"
+              title="Show sidebar ([)"
               onClick={ws.toggleRail}
             >
               <PanelLeft className="icon" aria-hidden="true" />
@@ -155,29 +150,12 @@ function WorkspaceShell() {
         <button type="button" className="scrim" aria-label="Close open panel" onClick={closeDrawers} />
       ) : null}
 
-      <footer className="statusbar" aria-label="Status">
-        <span className="status-pill">
-          <span className={`health-dot${healthOk ? " ok" : ws.health.error ? " bad" : ""}`} aria-hidden="true" />
-          {healthOk ? <span className="ok">API ok</span> : ws.health.error ? <span className="bad">API unreachable</span> : "Checking API"}
-        </span>
-        <span className="hide-small">
-          Scope: {ws.scope === "all" ? "all repositories" : (ws.repo?.name ?? "no repository")} · env{" "}
-          <span className="mono">{ws.environment}</span>
-        </span>
-        <span className="hide-small">
-          Snapshot graph: {visibleNodes} nodes · {visibleEdges} edges
-        </span>
-        <span className="topbar-spacer" style={{ flex: 1 }} />
-        <button type="button" className="statusbar-link hide-small" onClick={() => ws.openDialog("shortcuts")}>
-          Keyboard shortcuts <span className="kbd">?</span>
-        </button>
-      </footer>
-
       <Toasts />
       <SettingsDialog />
       <FolderBrowserDialog />
       <RunAnalysisDialog />
       <CoverageDialog />
+      <CodeSearchDialog />
       <CommandPalette />
       <ShortcutsDialog />
     </div>

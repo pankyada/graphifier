@@ -3,16 +3,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, messageOf } from "@/lib/api";
 import { PREF_KEYS, readList, readNumberPref, readPref, writeList, writePref } from "@/lib/prefs";
-import { isActive } from "@/lib/jobs";
+import { isActive, isImportActive, type AnalysisMode } from "@/lib/jobs";
 import { useResource } from "@/lib/useResource";
 import type {
   Graph,
+  GraphView,
+  GraphGranularity,
   GraphEdge,
   GraphNode,
   Health,
   Job,
   Neo4jSyncResult,
   Repository,
+  RepositoryImport,
   Resolution,
   Settings,
   SymbolsResponse,
@@ -34,7 +37,7 @@ const ENV_PATTERN = /^[A-Za-z0-9_.-]{1,64}$/;
 export type Scope = "repo" | "all";
 export type InspectorTab = "evidence" | "links" | "details" | "mapping";
 export type ToastTone = "ok" | "bad" | "info";
-export type DialogName = "settings" | "browse" | "run" | "coverage" | "palette" | "shortcuts";
+export type DialogName = "settings" | "browse" | "run" | "coverage" | "palette" | "shortcuts" | "embeddings";
 
 export interface Selection {
   kind: "node" | "edge";
@@ -69,15 +72,24 @@ export function useWorkspaceState() {
   const [hydrated, setHydrated] = useState(false);
   const [repoId, setRepoId] = useState<string | null>(null);
   const [scope, setScopeState] = useState<Scope>("repo");
+  const [graphGranularity, setGraphGranularityState] = useState<GraphGranularity>("overview");
+  const [graphView, setGraphViewState] = useState<GraphView>("flow");
+  const [graphQuery, setGraphQuery] = useState("");
   const [environment, setEnvironmentState] = useState(DEFAULT_ENVIRONMENT);
   const [recentEnvironments, setRecentEnvironments] = useState<string[]>([DEFAULT_ENVIRONMENT]);
-  const [railWidth, setRailWidthState] = useState(288);
+  const [railWidth, setRailWidthState] = useState(280);
   const [inspectorWidth, setInspectorWidthState] = useState(360);
-  const [railPinned, setRailPinned] = useState(false);
+  const [railPinned, setRailPinned] = useState(true);
   const [inspectorHidden, setInspectorHidden] = useState(false);
   const [railDrawerOpen, setRailDrawerOpen] = useState(false);
   const [inspectorDrawerOpen, setInspectorDrawerOpen] = useState(false);
-  const [staticNoticeDismissed, setStaticNoticeDismissed] = useState(false);
+  const [pinnedGeneration, setPinnedGeneration] = useState<string | undefined>();
+  const [revealedNode, setRevealedNode] = useState<string | undefined>();
+  const [hierarchyScope, setHierarchyScope] = useState<string | null>(null);
+  const [hierarchyMode, setHierarchyModeState] = useState<"ai" | "deterministic">("ai");
+  const [includeTests, setIncludeTestsState] = useState(false);
+  const setIncludeTests = useCallback((value: boolean) => { setIncludeTestsState(value); setPinnedGeneration(undefined); setHierarchyScope(null); setRevealedNode(undefined); }, []);
+  useEffect(() => { setHierarchyScope(null); setPinnedGeneration(undefined); setRevealedNode(undefined); }, [repoId, scope, environment, includeTests]);
   const [focus, setFocusState] = useState<Focus | null>(null);
   const [focusTrail, setFocusTrail] = useState<string[]>([]);
   const [selection, setSelection] = useState<Selection | null>(null);
@@ -93,10 +105,13 @@ export function useWorkspaceState() {
   const [lastSync, setLastSync] = useState<Neo4jSyncResult | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [dialog, setDialog] = useState<DialogName | null>(null);
+  const [runAnalysisMode, setRunAnalysisMode] = useState<AnalysisMode>("static");
 
   const toastSeq = useRef(0);
   const nonce = useRef(0);
   const seenJobs = useRef(new Map<string, string>());
+  const seenImports = useRef(new Map<string, string>());
+  const [pendingImport, setPendingImport] = useState<RepositoryImport | null>(null);
 
   // ---------- toasts & errors ----------
 
@@ -136,11 +151,10 @@ export function useWorkspaceState() {
     setScopeState(readPref(PREF_KEYS.scope, "repo") === "all" ? "all" : "repo");
     const storedRepo = readPref(PREF_KEYS.repoId, "");
     setRepoId(storedRepo || null);
-    setRailWidthState(clamp(readNumberPref(PREF_KEYS.railWidth, 288), RAIL_MIN, RAIL_MAX));
+    setRailWidthState(clamp(readNumberPref(PREF_KEYS.railWidth, 280), RAIL_MIN, RAIL_MAX));
     setInspectorWidthState(clamp(readNumberPref(PREF_KEYS.inspectorWidth, 360), INSPECTOR_MIN, INSPECTOR_MAX));
-    setRailPinned(readPref(PREF_KEYS.railPinned, "") === "1");
+    setRailPinned(readPref(PREF_KEYS.railPinned, "") !== "0");
     setInspectorHidden(readPref(PREF_KEYS.inspectorHidden, "") === "1");
-    setStaticNoticeDismissed(readPref(PREF_KEYS.staticNoticeDismissed, "") === "1");
     setHydrated(true);
   }, []);
 
@@ -149,6 +163,37 @@ export function useWorkspaceState() {
   const health = useResource<Health>("health", (signal) => api.health(signal));
   const settings = useResource<Settings>("settings", (signal) => api.settings(signal));
   const repos = useResource<{ repositories: Repository[] }>("repos", (signal) => api.repositories(signal));
+
+  const repositoryImports = useResource<{ imports: RepositoryImport[] }>("repository-imports", (signal) => api.repositoryImports(signal));
+  const importList = useMemo(() => repositoryImports.data?.imports ?? [], [repositoryImports.data]);
+  const activeImports = importList.some(isImportActive) || !!pendingImport && isImportActive(pendingImport);
+  const reloadImports = repositoryImports.reload;
+  const reloadRepos = repos.reload;
+  useEffect(() => {
+    if (!activeImports || repositoryImports.loading) return;
+    const timer = window.setTimeout(() => {
+      if (!document.hidden) reloadImports();
+    }, repositoryImports.error ? 5000 : 1500);
+    return () => window.clearTimeout(timer);
+  }, [activeImports, repositoryImports.loading, repositoryImports.error, repositoryImports.data, reloadImports]);
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) reloadImports(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [reloadImports]);
+  useEffect(() => {
+    for (const job of importList) {
+      const previous = seenImports.current.get(job.id);
+      if (previous && previous !== job.status) {
+        if (job.status === "completed") {
+          reloadRepos();
+          toast("ok", `Cloned ${job.name || "repository"} locally. Ready for analysis.`);
+        }
+        if (job.status === "failed") toast("bad", `Repository clone failed: ${job.error || "See import details."}`);
+      }
+      seenImports.current.set(job.id, job.status);
+    }
+  }, [importList, reloadRepos, toast]);
 
   const repoList = useMemo(() => repos.data?.repositories ?? [], [repos.data]);
   const repo = useMemo(() => repoList.find((item) => item.id === repoId) ?? null, [repoList, repoId]);
@@ -168,9 +213,9 @@ export function useWorkspaceState() {
   const jobList = useMemo(() => jobs.data?.jobs ?? [], [jobs.data]);
 
   const graphKey =
-    repoList.length > 0 && (scope === "all" || repoId) ? `${scope === "all" ? "*" : repoId}|${environment}` : null;
+    repoList.length > 0 && (scope === "all" || repoId) ? `${scope === "all" ? "*" : repoId}|${environment}|${graphView}|${graphGranularity}|${graphQuery}|${hierarchyScope}|${includeTests}|${pinnedGeneration}|${revealedNode}|${hierarchyMode}` : null;
   const graph = useResource<Graph>(graphKey, (signal) =>
-    api.graph({ repoId: scopeRepoId ?? undefined, environment }, signal),
+    api.graph({ repoId: scopeRepoId ?? undefined, environment, view: graphView, granularity: graphGranularity, query: graphQuery, focusId: revealedNode, scopeId: hierarchyScope ?? undefined, generation: pinnedGeneration, hierarchyMode, includeTests }, signal),
   );
 
   const mappingKey = scope === "repo" && repoId && repoList.length > 0 ? `${repoId}|${environment}` : null;
@@ -179,11 +224,16 @@ export function useWorkspaceState() {
     api.resolutions(repoId ?? "", environment, signal),
   );
 
-  const traceKey = focus ? `${focus.id}|${focus.direction}|${scope === "all" ? "*" : repoId}|${environment}` : null;
+  const traceKey = focus && graph.data?.generation && !graph.loading ? `${focus.id}|${focus.direction}|${scope === "all" ? "*" : repoId}|${environment}|${graphView}|${graphGranularity}|${graph.data.generation}|${includeTests}|${hierarchyMode}` : null;
   const trace = useResource<Trace>(traceKey, (signal) =>
     api.trace(
       {
         entityId: focus?.id ?? "",
+        generation: graph.data?.generation,
+        hierarchyMode,
+        includeTests,
+        view: graphView,
+        granularity: graphGranularity,
         direction: focus?.direction ?? "both",
         repoId: scopeRepoId ?? undefined,
         environment,
@@ -223,7 +273,7 @@ export function useWorkspaceState() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [reloadJobs]);
 
-  const reloadGraph = graph.reload;
+  const reloadGraph = useCallback(() => { setPinnedGeneration(undefined); setHierarchyScope(null); setRevealedNode(undefined); graph.reload(); }, [graph.reload]);
   const reloadSymbols = symbols.reload;
   const reloadResolutions = resolutions.reload;
 
@@ -265,20 +315,24 @@ export function useWorkspaceState() {
   const nodeIndex = useMemo(() => {
     const map = new Map<string, GraphNode>();
     for (const node of graph.data?.nodes ?? []) map.set(node.id, node);
+    for (const node of trace.data?.nodes ?? []) map.set(node.id, node);
     return map;
-  }, [graph.data]);
+  }, [graph.data, trace.data]);
 
   const edgeIndex = useMemo(() => {
     const map = new Map<string, GraphEdge>();
     for (const edge of graph.data?.edges ?? []) map.set(edge.id, edge);
+    for (const edge of trace.data?.edges ?? []) map.set(edge.id, edge);
     return map;
-  }, [graph.data]);
+  }, [graph.data, trace.data]);
 
   const resolvedSources = useMemo(() => {
     const set = new Set<string>();
-    for (const edge of graph.data?.edges ?? []) if (edge.kind === "RESOLVES_TO") set.add(edge.source);
+    for (const edge of [...(graph.data?.edges ?? []), ...(trace.data?.edges ?? [])]) {
+      if (edge.kind === "RESOLVES_TO") set.add(edge.source);
+    }
     return set;
-  }, [graph.data]);
+  }, [graph.data, trace.data]);
 
   const latestJob = jobList[0] ?? null;
 
@@ -289,7 +343,36 @@ export function useWorkspaceState() {
     setFocusTrail([]);
     setSelection(null);
     setCenterRequest(null);
+    setRevealedNode(undefined);
   }, []);
+
+  const setHierarchyMode = useCallback((mode: "ai" | "deterministic") => {
+    setHierarchyModeState(mode); setPinnedGeneration(undefined); setHierarchyScope(null); resetView();
+  }, [resetView]);
+
+  const setGraphGranularity = useCallback((level: GraphGranularity) => {
+    setGraphGranularityState(level);
+    if (level === "overview") setHierarchyScope(null);
+    else if (level === "interfaces") {
+      const architecture = graph.data?.breadcrumbs?.find((crumb) => crumb.level === "overview");
+      setHierarchyScope(architecture?.id ?? null);
+    }
+    resetView();
+  }, [resetView, graph.data?.breadcrumbs]);
+
+  const openGroup = useCallback((id: string | null, level: GraphGranularity = "overview", revealId?: string) => {
+    setPinnedGeneration(graph.data?.generation);
+    setHierarchyScope(id);
+    setGraphGranularityState(level);
+    setGraphQuery("");
+    resetView();
+    setRevealedNode(revealId);
+  }, [resetView, graph.data?.generation]);
+
+  const setGraphView = useCallback((view: GraphView) => {
+    setGraphViewState(view);
+    resetView();
+  }, [resetView]);
 
   const selectRepo = useCallback(
     (id: string) => {
@@ -352,7 +435,7 @@ export function useWorkspaceState() {
     }
     const next = !railPinned;
     setRailPinned(next);
-    writePref(PREF_KEYS.railPinned, next ? "1" : "");
+    writePref(PREF_KEYS.railPinned, next ? "1" : "0");
   }, [railPinned]);
 
   const toggleInspector = useCallback(() => {
@@ -371,11 +454,6 @@ export function useWorkspaceState() {
       setInspectorHidden(false);
       writePref(PREF_KEYS.inspectorHidden, "");
     }
-  }, []);
-
-  const dismissStaticNotice = useCallback(() => {
-    setStaticNoticeDismissed(true);
-    writePref(PREF_KEYS.staticNoticeDismissed, "1");
   }, []);
 
   // ---------- actions: graph selection, focus and lineage ----------
@@ -407,6 +485,11 @@ export function useWorkspaceState() {
         setFocusTrail([]);
         return;
       }
+      const group = graph.data?.nodes.find((node) => node.id === id);
+      if (group?.kind === "architecture" || group?.kind === "component") {
+        openGroup(id, group.kind === "component" || graph.data?.recommended_levels?.length === 2 ? "detail" : "interfaces");
+        return;
+      }
       setFocusState({ id, direction });
       setFocusTrail((trail) => {
         // Returning to a node already on the trail rewinds to it instead of growing a loop.
@@ -415,7 +498,7 @@ export function useWorkspaceState() {
       });
       setSelection({ kind: "node", id });
     },
-    [],
+    [graph.data, openGroup],
   );
 
   const focusBack = useCallback(() => {
@@ -512,7 +595,14 @@ export function useWorkspaceState() {
 
   // ---------- panels: dialogs ----------
 
-  const openDialog = useCallback((name: DialogName) => setDialog(name), []);
+  const openDialog = useCallback((name: DialogName) => {
+    if (name === "run") setRunAnalysisMode("static");
+    setDialog(name);
+  }, []);
+  const openAnalysis = useCallback((mode: AnalysisMode = "static") => {
+    setRunAnalysisMode(mode);
+    setDialog("run");
+  }, []);
   const closeDialog = useCallback(() => setDialog(null), []);
 
   const afterRegister = useCallback(
@@ -527,6 +617,25 @@ export function useWorkspaceState() {
     },
     [repos, resetView, toast],
   );
+
+  const afterImportQueued = useCallback((job: RepositoryImport) => {
+    setPendingImport(job);
+    reloadImports();
+    toast("info", job.status === "completed" ? "Repository already cloned. Ready for analysis." : "Repository clone queued. You can close this dialog while it runs.");
+  }, [reloadImports, toast]);
+
+  useEffect(() => {
+    const job = importList.find((item) => item.id === pendingImport?.id);
+    if (!job || !pendingImport || job.updated_at < pendingImport.updated_at || isImportActive(job)) return;
+    if (job.status === "completed" && job.repo_id) {
+      if (!repoList.some((item) => item.id === job.repo_id)) {
+        reloadRepos();
+        return;
+      }
+      selectRepo(job.repo_id);
+    }
+    setPendingImport(null);
+  }, [importList, pendingImport, repoList, reloadRepos, selectRepo]);
 
   return {
     hydrated,
@@ -545,6 +654,9 @@ export function useWorkspaceState() {
     setScope,
     selectRepo,
     afterRegister,
+    repositoryImports,
+    importList,
+    afterImportQueued,
     environment,
     recentEnvironments,
     commitEnvironment,
@@ -555,7 +667,14 @@ export function useWorkspaceState() {
     cancelling,
     requestCancel,
     // graph
-    graph,
+    graph: { ...graph, reload: reloadGraph },
+    graphView,
+    setGraphView,
+    graphGranularity,
+    setGraphGranularity,
+    hierarchyScope, openGroup, includeTests, setIncludeTests, hierarchyMode, setHierarchyMode,
+    graphQuery,
+    setGraphQuery,
     nodeIndex,
     edgeIndex,
     resolvedSources,
@@ -601,10 +720,10 @@ export function useWorkspaceState() {
     setInspectorDrawerOpen,
     toggleInspector,
     showInspector,
-    staticNoticeDismissed,
-    dismissStaticNotice,
     dialog,
     openDialog,
+    openAnalysis,
+    runAnalysisMode,
     closeDialog,
     // neo4j
     lastSync,

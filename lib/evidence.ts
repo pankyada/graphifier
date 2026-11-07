@@ -48,9 +48,28 @@ export function evidenceTarget(entry: Evidence, context: TargetContext): ViewerT
   return {
     repoId,
     environment: context.environment,
-    snapshotId: pickSnapshotId(repoId, context.environment, context.ownerSnapshots, context.graphSnapshots),
+    snapshotId: entry.snapshot_id ?? pickSnapshotId(repoId, context.environment, context.ownerSnapshots, context.graphSnapshots),
     file: entry.file,
     startLine: entry.start_line,
     endLine: entry.end_line,
   };
+}
+
+/** A consolidated item can cite the same path in several repositories or snapshots. */
+export function uniqueEvidence(items: Evidence[], fallbackRepoId: string | null = null): Evidence[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    if (!item || typeof item.file !== "string") return false;
+    const key = JSON.stringify([item.repo_id ?? fallbackRepoId, item.snapshot_id, item.file, item.start_line, item.end_line]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export function summarizeEvidence(items: Evidence[], fallbackRepoId: string | null = null) {
+  const spans = uniqueEvidence(items, fallbackRepoId);
+  const files = new Set(spans.map((item) => JSON.stringify([item.repo_id ?? fallbackRepoId, item.file])));
+  const repositories = new Set(spans.map((item) => item.repo_id ?? fallbackRepoId).filter((id): id is string => !!id));
+  return { spans: spans.length, files: files.size, repositories: repositories.size, repositoryIds: repositories };
 }

@@ -32,7 +32,7 @@ const GROUPS: { title: string; keys: [string[], string][] }[] = [
   {
     title: "Panels",
     keys: [
-      [["["], "Keep sidebar open, or let it collapse"],
+      [["["], "Show or hide the sidebar"],
       [["]"], "Toggle inspector"],
       [["?"], "Show this list"],
     ],

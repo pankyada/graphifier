@@ -16,6 +16,7 @@ export interface LineageNodeData extends Record<string, unknown> {
   path: PathRole;
   unresolved: boolean;
   selected: boolean;
+  constellation?: boolean;
   /** Position in the left-to-right entrance wave, in ms. */
   enterDelay: number;
 }
@@ -33,6 +34,7 @@ export function NodeCard({ data, id }: NodeProps<LineageFlowNode>) {
 
   const classes = [
     "node-card",
+    data.constellation ? "constellation-node" : "",
     role === "focus" ? "is-focus" : "",
     role === "upstream" ? "is-upstream" : "",
     role === "downstream" ? "is-downstream" : "",
@@ -71,6 +73,8 @@ export function NodeCard({ data, id }: NodeProps<LineageFlowNode>) {
         <div className="node-sub">
           <span className="truncate">
             {node.kind}
+            {node.attributes?.boundary === true ? " · external" : ""}
+            {node.attributes?.context === "test" ? " · test" : ""}
             {prefix ? ` · ${prefix}` : ""}
           </span>
           <span className="node-evidence" title={`${evidenceCount} evidence entries`}>
@@ -79,6 +83,9 @@ export function NodeCard({ data, id }: NodeProps<LineageFlowNode>) {
           </span>
         </div>
       </div>
+      {(node.kind === "architecture" || node.kind === "component") ? <span className="node-badge">{String(node.attributes.member_count ?? 0)} members</span> : null}
+      {node.attributes?.is_test === true ? <span className="node-badge">tests</span> : null}
+      {node.attributes?.entrypoint === true || node.attributes?.entrypoint === "true" ? <span className="node-entrypoint">entrypoint</span> : null}
       {unresolved ? (
         <span className="node-badge amber">unresolved</span>
       ) : canonical ? (
@@ -98,7 +105,7 @@ const ACTIONS: { direction: TraceDirection; label: string; hint: string }[] = [
 /** Floats over the selected node and heads the inspector, so tracing is always one click away. */
 export function NodeActions({ id }: { id: string }) {
   const ws = useWorkspace();
-  const edges = ws.graph.data?.edges;
+  const edges = ws.focus ? ws.trace.data?.edges : ws.graph.data?.edges;
   const counts = useMemo(() => {
     const result = { in: 0, out: 0 };
     for (const edge of edges ?? []) {

@@ -109,5 +109,29 @@ class GraphBindingTests(unittest.TestCase):
         self.assertNotIn("repo-a:transform", {node["id"] for node in after_trace["nodes"]})
 
 
+    def test_column_canonical_stitching_preserves_roles_and_work_scope(self):
+        for repo in ("a", "b"):
+            self._snapshot(repo, "job-" + repo, "snap-" + repo, "2026-11-03T00:00:00Z")
+            self._entity(repo, "snap-" + repo, repo + ":table", "dataset", "risk.scores")
+            self._entity(repo, "snap-" + repo, repo + ":column", "column", "score")
+            self._relationship(repo, "snap-" + repo, repo + ":table", repo + ":column", "HAS_COLUMN")
+        self._entity("b", "snap-b", "b:calc", "transformation", "aggregate")
+        self._relationship("b", "snap-b", "b:column", "b:calc", "INPUT_TO")
+        result = graph.build_graph(environment="dev", granularity="detail")
+        columns = [n for n in result['nodes'] if n['kind'] == 'column' and n['attributes'].get('canonical')]
+        self.assertEqual(len(columns), 1)
+        self.assertEqual(set(columns[0]['repositories']), {'a', 'b'})
+        self.assertIn('b:calc', {n['id'] for n in graph.trace_graph('a:column', direction='out', environment='dev')['nodes']})
+
+    def test_reads_traces_resource_to_consumer(self):
+        self._snapshot('a', 'job', 'snap', '2026-11-03T00:00:00Z')
+        self._entity('a', 'snap', 'a:input', 'dataset', 'input')
+        self._entity('a', 'snap', 'a:job', 'program', 'job.py')
+        self._relationship('a', 'snap', 'a:job', 'a:input', 'READS')
+        result = graph.trace_graph('a:input', direction='out', environment='dev')
+        self.assertIn('a:job', {n['id'] for n in result['nodes']})
+        self.assertEqual(result['edges'][0]['source'], 'a:job')
+
+
 if __name__ == "__main__":
     unittest.main()

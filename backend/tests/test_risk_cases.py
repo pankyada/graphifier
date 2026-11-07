@@ -116,7 +116,7 @@ class BackendRiskCases(unittest.TestCase):
         def fake_extract(path_text,content):
             filename=Path(path_text).name
             return {"entities":[{"id":"static-id","kind":"dataset","name":"table","attributes":{},"evidence":{"file":filename,"start_line":1,"end_line":1}}] if filename=="f0.py" else [],"relationships":[],"symbols":[],"warnings":[]}
-        with patch("graphifier.worker._extract",side_effect=fake_extract), patch("graphifier.agent.analyze_file",side_effect=fake_agent):
+        with patch.dict(os.environ, {"GRAPHIFIER_AGENT_MAX_FILES": "20"}), patch("graphifier.worker._extract",side_effect=fake_extract), patch("graphifier.agent.analyze_file",side_effect=fake_agent):
             run_job({"id":jid,"repo_id":rid,"use_agent":1})
         self.assertEqual(len(calls),20)
         with connect() as c:

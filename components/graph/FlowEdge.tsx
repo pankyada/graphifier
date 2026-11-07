@@ -1,14 +1,15 @@
 "use client";
 
-import { BaseEdge, getSmoothStepPath, type Edge, type EdgeProps } from "@xyflow/react";
+import { BaseEdge, getBezierPath, getSmoothStepPath, type Edge, type EdgeProps } from "@xyflow/react";
 
-export type FlowEdgeType = Edge<{ flow: string | null }, "flow">;
+export type FlowEdgeType = Edge<{ flow: string | null; constellation?: boolean }, "flow">;
 
 const PARTICLE_OFFSETS = [0, 0.9];
 
 /** Smooth-step edge. On a lit lineage path, particles travel from source to target. */
 export function FlowEdge(props: EdgeProps<FlowEdgeType>) {
-  const [path, labelX, labelY] = getSmoothStepPath({
+  const pathBuilder = props.data?.constellation ? getBezierPath : getSmoothStepPath;
+  const [path, labelX, labelY] = pathBuilder({
     sourceX: props.sourceX,
     sourceY: props.sourceY,
     targetX: props.targetX,

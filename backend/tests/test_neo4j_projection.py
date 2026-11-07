@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from graphifier.neo4j_adapter import sync_repo
+from graphifier.neo4j_adapter import sync_repo, hierarchy_export
 
 
 class FakeTx:
@@ -36,14 +36,24 @@ class Neo4jProjectionTests(unittest.TestCase):
         with patch.dict(os.environ,{"NEO4J_URI":"bolt://hidden.example","NEO4J_USER":"secret-user","NEO4J_PASSWORD":"secret-pass"}), patch.dict(sys.modules,{"neo4j":fake}), patch("graphifier.neo4j_adapter.build_graph",return_value=graph) as builder:
             result=sync_repo()
         self.assertEqual(result["status"],"synced")
-        self.assertEqual(result["nodes"],1)
-        builder.assert_called_once_with(repo_id=None,environment=None)
+        self.assertEqual(result["nodes"],len(hierarchy_export(graph)["nodes"]))
+        builder.assert_called_once_with(repo_id=None,environment=None,include_tests=True)
         queries=" ".join(call[0] for call in tx.calls)
         self.assertIn("(n.projection_id,n.id) IS UNIQUE", queries)
         self.assertIn("MERGE (n:GraphifierNode", queries)
         scoped=[(query,params) for query,params in tx.calls if "projection_id:$projection_id" in query]
         self.assertTrue(scoped)
         self.assertTrue(all(params.get("projection_id")==result["projection_id"] for _,params in scoped))
+
+    def test_export_preserves_test_details_and_memberships(self):
+        node = {"id":"test:run", "name":"run", "kind":"function", "attributes":{"context":"test"},
+                "repositories":["repo"], "evidence":[{"file":"tests/test_run.py","start_line":1,"end_line":2}]}
+        exported = hierarchy_export({"nodes":[node],"edges":[]})
+        self.assertIn(node, exported["nodes"])
+        memberships = [e for e in exported["edges"] if e["kind"] == "GROUP_CONTAINS"]
+        self.assertEqual(len([e for e in memberships if e["target"] == node["id"]]), 2)
+        ids = {n["id"] for n in exported["nodes"]}
+        self.assertTrue(all(e["source"] in ids and e["target"] in ids for e in memberships))
 
     def test_failed_sync_does_not_expose_credentials(self):
         class Driver:

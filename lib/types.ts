@@ -6,10 +6,44 @@ export interface Health {
   version: string;
 }
 
+export type AgentApiMode = "responses" | "chat_completions";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface AgentSettings {
+  enabled: boolean;
+  model: string;
+  api_key_configured: boolean;
+  base_url?: string;
+  api_mode?: AgentApiMode;
+  api?: AgentApiMode;
+  reasoning_effort?: ReasoningEffort | null;
+  hierarchy_model?: string;
+  hierarchy_reasoning_effort?: ReasoningEffort | null;
+}
+
+export interface AgentSettingsInput {
+  base_url: string;
+  model: string;
+  api_mode: AgentApiMode;
+  reasoning_effort?: ReasoningEffort | null;
+  hierarchy_model?: string;
+  hierarchy_reasoning_effort?: ReasoningEffort | null;
+  /** Omit or leave blank to preserve the current key. */
+  api_key?: string;
+  clear_api_key?: boolean;
+}
+
+export interface AgentConnectionTest {
+  status: "ok";
+  models: string[];
+  selected_model_available: boolean;
+  hierarchy_model_available?: boolean;
+}
+
 export interface Settings {
   repo_root: string;
   system: string;
-  agent: { enabled: boolean; model: string; api_key_configured: boolean };
+  agent: AgentSettings;
   neo4j: { enabled: boolean; uri_configured: boolean };
   api_token_required: boolean;
 }
@@ -18,7 +52,24 @@ export interface Repository {
   id: string;
   name: string;
   path: string;
+  remote_url?: string | null;
+  remote_branch?: string | null;
+  remote_commit?: string | null;
   created_at: string;
+}
+
+export interface RepositoryImport {
+  id: string;
+  url: string;
+  branch: string | null;
+  name: string | null;
+  status: "queued" | "cloning" | "completed" | "failed" | "cancelled";
+  progress: number;
+  error: string | null;
+  repo_id: string | null;
+  cancel_requested: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface BrowseEntry {
@@ -35,11 +86,15 @@ export interface BrowseResponse {
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | (string & {});
 
 export interface Job {
+  resumable?: boolean;
+  checkpoint?: { phase: string; completed_files: number; total_files: number; current_file?: string | null } | null;
   id: string;
   repo_id: string;
   environment: string;
-  /** True when the job ran the bounded Luna agent pass; false for static analysis. */
+  /** True when repository analysis uses the configured AI harness. */
   use_agent: boolean;
+  use_embeddings?: boolean;
+  use_ai_hierarchy?: boolean;
   status: JobStatus;
   progress: number;
   total_files: number;
@@ -52,6 +107,7 @@ export interface Job {
 }
 
 export interface Evidence {
+  snapshot_id?: string;
   file: string;
   start_line: number;
   end_line: number;
@@ -97,7 +153,22 @@ export interface WarningEntry {
   warning: unknown;
 }
 
+export type GraphView = "flow" | "constellation";
+export type GraphGranularity = "overview" | "interfaces" | "detail";
+
 export interface Graph {
+  ai_hierarchy?: { status: "completed" | "partial" | "not_requested"; model?: string; warnings?: string[] };
+  hierarchy_mode?: "ai" | "deterministic";
+  search_matches?: { node: GraphNode; ancestors: string[]; groups: GraphNode[] }[];
+  generation?: string;
+  scope_id?: string | null;
+  breadcrumbs?: { id: string; name: string; level: GraphGranularity }[];
+  recommended_levels?: GraphGranularity[];
+  view?: string;
+  granularity?: GraphGranularity;
+  truncated?: boolean;
+  counts?: Record<string, number>;
+  entrypoints?: string[];
   repo_id: string | null;
   environment: string | null;
   context?: string | null;
@@ -120,6 +191,8 @@ export interface UnresolvedGap {
 export type TraceDirection = "in" | "out" | "both";
 
 export interface Trace {
+  granularity?: GraphGranularity;
+  snapshots?: SnapshotMeta[];
   entity_id: string;
   direction: TraceDirection;
   nodes: GraphNode[];
@@ -228,4 +301,20 @@ export interface Neo4jSyncResult {
   nodes: number;
   edges: number;
   error?: string | null;
+}
+
+export interface EmbeddingMatch {
+  repo_id: string;
+  snapshot_id: string;
+  file: string;
+  start_line: number;
+  end_line: number;
+  content: string;
+  score: number;
+}
+export interface EmbeddingStatus {
+  enabled: boolean;
+  model: string;
+  indexed_chunks: number;
+  indexed_snapshots: number;
 }

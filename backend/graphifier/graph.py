@@ -9,6 +9,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from .db import connect
+from .graph_views import project_graph
 
 
 _SYMBOL_PATTERNS = (
@@ -115,9 +116,10 @@ def _load(c, repo_id: str | None, environment: str | None):
         where.append("j.environment=?")
         args.append(environment)
     rows = c.execute(
-        "SELECT s.*,j.environment,j.status AS job_status,j.updated_at AS job_updated_at "
+        "SELECT * FROM (SELECT s.*,j.environment,j.status AS job_status,j.updated_at AS job_updated_at, "
+        "ROW_NUMBER() OVER (PARTITION BY s.repo_id ORDER BY s.created_at DESC,s.id DESC) AS snapshot_rank "
         "FROM snapshots s JOIN jobs j ON j.id=s.job_id WHERE " + " AND ".join(where) +
-        " ORDER BY s.repo_id,s.created_at DESC,s.id DESC", args,
+        ") WHERE snapshot_rank=1 ORDER BY repo_id", args,
     ).fetchall()
     latest: dict[str, dict] = {}
     for row in rows:
@@ -127,9 +129,17 @@ def _load(c, repo_id: str | None, environment: str | None):
 
 
 def _build(c, repo_id: str | None = None, environment: str | None = None,
-           namespace: str | None = None, override_binding: dict | None = None) -> dict:
+           namespace: str | None = None, override_binding: dict | None = None,
+           snapshot_id: str | None = None) -> dict:
     system = namespace or os.environ.get("GRAPHIFIER_SYSTEM", "local-workspace")
     snapshots = _load(c, repo_id, environment)
+    if snapshot_id is not None:
+        # Internal worker-only access to its staged snapshot. Public requests
+        # continue to select completed jobs exclusively.
+        row = c.execute("SELECT s.*,j.environment FROM snapshots s JOIN jobs j ON j.id=s.job_id WHERE s.id=? AND s.repo_id=? AND j.environment=?", (snapshot_id,repo_id,environment)).fetchone()
+        if row is None:
+            raise ValueError("Staged snapshot does not belong to this analysis scope")
+        snapshots = {repo_id: dict(row)}
     nodes: dict[str, dict] = {}
     edges: dict[str, dict] = {}
     warnings: list[dict] = []
@@ -153,7 +163,8 @@ def _build(c, repo_id: str | None = None, environment: str | None = None,
 
     def add_edge(source: str, target: str, kind: str, attrs: dict | None = None,
                  evidence: list | None = None, key_scope: str = ""):
-        eid = _stable("edge", key_scope, source, target, kind)
+        semantic = {k: v for k, v in (attrs or {}).items() if k not in {"method", "source_methods"}}
+        eid = _stable("edge", key_scope, source, target, kind, json.dumps(semantic, sort_keys=True))
         item = edges.get(eid)
         if item is None:
             item = {"id": eid, "source": source, "target": target, "kind": kind,
@@ -188,7 +199,7 @@ def _build(c, repo_id: str | None = None, environment: str | None = None,
                                          "message": "Multiple applied bindings exist for this symbol; reference left unresolved"}})
         bindings_used.extend(applied)
 
-        findings = c.execute("SELECT category,data FROM findings WHERE repo_id=? AND snapshot_id=? ORDER BY category,item_key", (rid, sid)).fetchall()
+        findings = c.execute("SELECT category,data FROM findings WHERE repo_id=? AND snapshot_id=? ORDER BY category,item_key", (rid, sid))
         source_entities: dict[str, dict] = {}
         rels: list[dict] = []
         for f in findings:
@@ -199,6 +210,35 @@ def _build(c, repo_id: str | None = None, environment: str | None = None,
                 rels.append(data)
             elif f["category"] == "warning":
                 warnings.append({"repo_id": rid, "snapshot_id": sid, "warning": data})
+        # Older snapshots have import reference nodes but no resolved local
+        # program links. Derive those links from the captured source, never the
+        # changing live checkout. The generation cache pays this cost once.
+        if not any(r.get("attributes", {}).get("resolution") == "local-source" for r in rels):
+            from collections.abc import Mapping
+            from .code_links import link_code_findings
+
+            class CapturedSources(Mapping):
+                def __init__(self):
+                    self.paths = {r[0] for r in c.execute("SELECT file FROM source_files WHERE repo_id=? AND snapshot_id=?", (rid, sid))}
+
+                def __iter__(self):
+                    return iter(self.paths)
+
+                def __len__(self):
+                    return len(self.paths)
+
+                def __contains__(self, key):
+                    return key in self.paths
+
+                def __getitem__(self, key):
+                    row = c.execute("SELECT content FROM source_files WHERE repo_id=? AND snapshot_id=? AND file=?", (rid, sid, key)).fetchone()
+                    if row is None:
+                        raise KeyError(key)
+                    return row[0]
+
+            linked = link_code_findings(source_entities.values(), rels, CapturedSources())
+            rels.extend(linked["relationships"])
+            warnings.extend({"repo_id": rid, "snapshot_id": sid, "warning": item} for item in linked["warnings"])
         symrows = c.execute("SELECT * FROM symbols WHERE repo_id=? AND snapshot_id=? ORDER BY name,expression", (rid, sid)).fetchall()
         symbol_metadata: dict[str, list] = defaultdict(list)
         for row in symrows:
@@ -208,10 +248,13 @@ def _build(c, repo_id: str | None = None, environment: str | None = None,
         for entity_id, source in source_entities.items():
             kind = source.get("kind", "unknown")
             source_evidence = source.get("evidence")
-            ev = [{**source_evidence, "repo_id": rid}] if isinstance(source_evidence, dict) else []
+            ev = [{**span, "repo_id": rid} for span in source.get("evidence_spans", [source_evidence]) if isinstance(span, dict)]
             attrs = dict(source.get("attributes") or {})
+            # Attaching every repository symbol to every node produces a
+            # quadratic JSON response on macro-heavy repositories.
+            symbol_names = set(re.findall(r"[A-Za-z_]\w*", str(source.get("expression") or "") + " " + str(source.get("name") or "")))
             attrs.update({"source_id": entity_id, "source_expression": source.get("expression"),
-                          "symbol_metadata": symbol_metadata})
+                          "symbol_metadata": {name: symbol_metadata[name] for name in symbol_names if name in symbol_metadata}})
             node = {"id": entity_id, "kind": kind, "name": source.get("name", entity_id),
                     "expression": source.get("expression"), "attributes": attrs, "evidence": ev,
                     "repositories": [rid], "snapshots": [meta]}
@@ -243,12 +286,46 @@ def _build(c, repo_id: str | None = None, environment: str | None = None,
             add_edge(entity_id, cid, "RESOLVES_TO", {"resolved_name": resolved, "system": system,
                                                        "environment": env, "bindings": binding_refs}, ev, rid)
 
+        # A column can stitch only through one unambiguous physical parent.
+        # Local/work datasets deliberately have no canonical identity.
+        column_parents = defaultdict(set)
+        for rel in rels:
+            if rel.get("kind") == "HAS_COLUMN":
+                column_parents[str(rel.get("target"))].add(str(rel.get("source")))
+        for entity_id, source in source_entities.items():
+            if source.get("kind") != "column":
+                continue
+            parent = (source.get("attributes") or {}).get("parent_dataset_id")
+            if parent:
+                parent = str(parent)
+                if parent not in source_entities and f"{rid}:{parent}" in source_entities:
+                    parent = f"{rid}:{parent}"
+                if parent in source_entities:
+                    column_parents[entity_id].add(parent)
+            parents = column_parents[entity_id]
+            canonical_parents = {canonical_for_ref.get(parent) for parent in parents}
+            if len(canonical_parents) != 1 or None in canonical_parents:
+                continue
+            canonical_parent = next(iter(canonical_parents))
+            name = str(source.get("name", ""))
+            if not re.fullmatch(r"[A-Za-z_][\w$]*", name):
+                continue
+            cid = _stable("physical-column", canonical_parent, name.casefold())
+            canonical_for_ref[entity_id] = cid
+            ev = nodes[entity_id]["evidence"]
+            add_node({"id": cid, "kind": "column", "name": name,
+                      "attributes": {"canonical": True, "parent_dataset_id": canonical_parent,
+                                     "source_references": [entity_id], "system": system, "environment": env},
+                      "evidence": ev, "repositories": [rid], "snapshots": [meta]})
+            add_edge(entity_id, cid, "RESOLVES_TO", {"parent_dataset_id": canonical_parent}, ev, rid)
+            add_edge(canonical_parent, cid, "HAS_COLUMN", {}, ev, rid)
+
         for rel in rels:
             src, dst = str(rel.get("source", "")), str(rel.get("target", ""))
             if src not in nodes or dst not in nodes:
                 continue
             ev0 = rel.get("evidence")
-            ev = [{**ev0, "repo_id": rid}] if isinstance(ev0, dict) else []
+            ev = [{**span, "repo_id": rid} for span in rel.get("evidence_spans", [ev0]) if isinstance(span, dict)]
             attrs = dict(rel.get("attributes") or {})
             add_edge(src, dst, str(rel.get("kind", "RELATED")), attrs, ev, rid)
             # Project lineage through resolved physical references. This makes
@@ -258,9 +335,6 @@ def _build(c, repo_id: str | None = None, environment: str | None = None,
                 add_edge(canonical_src, canonical_dst, str(rel.get("kind", "RELATED")),
                          {**attrs, "via_reference": [src, dst]}, ev, rid)
 
-        for warning in c.execute("SELECT data FROM findings WHERE repo_id=? AND snapshot_id=? AND category='warning'", (rid, sid)):
-            w = _json(warning["data"], {})
-            warnings.append({"repo_id": rid, "snapshot_id": sid, "warning": w})
 
     versions = sorted((b.get("id"), b.get("version"), b.get("status")) for b in bindings_used)
     return {"nodes": sorted(nodes.values(), key=lambda n: n["id"]),
@@ -284,9 +358,20 @@ def _merge_records(left: list, right: list) -> list:
 
 
 def build_graph(repo_id: str | None = None, environment: str | None = None,
-                namespace: str | None = None) -> dict:
-    with connect() as c:
-        return _build(c, repo_id=repo_id, environment=environment, namespace=namespace)
+                namespace: str | None = None, view: str = "all",
+                max_nodes: int | None = None, focus_id: str | None = None, query: str | None = None,
+                granularity: str | None = None, scope_id: str | None = None,
+                generation: str | None = None, include_tests: bool = False, offset: int = 0, hierarchy_mode: str = "ai") -> dict:
+    from .graph_store import ensure_generation, read_window
+    # Existing raw callers retain their full detailed graph; explicit hierarchy
+    # requests use immutable indexed generations and bounded database windows.
+    if granularity is None and scope_id is None and generation is None:
+        from .hierarchy import filter_graph_context
+        with connect() as c:
+            result = filter_graph_context(_build(c, repo_id, environment, namespace), include_tests)
+        return project_graph(result, view=view, max_nodes=max_nodes, focus_id=focus_id, query=query)
+    gid = ensure_generation(repo_id,environment,namespace,include_tests,generation,hierarchy_mode)
+    return read_window(gid,granularity or 'overview',scope_id,max_nodes or 800,query,focus_id,view,offset)
 
 
 def preview_binding(proposal: dict) -> dict:
@@ -333,12 +418,27 @@ def preview_binding(proposal: dict) -> dict:
 
 def trace_graph(entity_id: str, direction: str = "both", repo_id: str | None = None,
                 environment: str | None = None, namespace: str | None = None,
-                max_depth: int = 20) -> dict:
-    graph = build_graph(repo_id=repo_id, environment=environment, namespace=namespace)
+                max_depth: int = 20, view: str = "all", max_nodes: int | None = None, granularity: str | None = None, include_tests: bool = False, generation: str | None = None, hierarchy_mode: str = "ai") -> dict:
+    if max_nodes is not None and not 1 <= max_nodes <= 5000:
+        raise ValueError("max_nodes must be between 1 and 5000")
+    if generation:
+        from .graph_store import ensure_generation, trace_generation
+        gid=ensure_generation(repo_id,environment,namespace,include_tests,generation,hierarchy_mode)
+        return trace_generation(gid,entity_id,direction,max_depth,max_nodes or 800,view)
+    from .hierarchy import filter_graph_context, build_hierarchy
+    with connect() as c:
+        graph = filter_graph_context(_build(c, repo_id, environment, namespace), include_tests)
+    # Trace detailed dependencies before any presentation-level grouping.
+    graph['edges'] = [e for e in graph['edges'] if e['kind'] not in {'CONTAINS','HAS_COLUMN','DEFINES'}]
+    seeds = [entity_id]
+    if entity_id.startswith('group:'):
+        hierarchy = build_hierarchy(graph)
+        seeds = [nid for nid, chain in hierarchy['ancestors'].items() if entity_id in chain]
     nodes = {n["id"]: n for n in graph["nodes"]}
-    if entity_id not in nodes:
+    if not any(seed in nodes for seed in seeds):
         return {"entity_id": entity_id, "nodes": [], "edges": [], "unresolved_gaps": [],
-                "truncated": False, "max_depth": max_depth, "graph_version": graph["version"]}
+                "truncated": False, "max_depth": max_depth, "graph_version": graph["version"],
+                "view": view, "warnings": graph["warnings"]}
     max_depth = max(0, int(max_depth))
     direction = {"upstream": "in", "downstream": "out"}.get(direction, direction)
     if direction not in {"both", "in", "out"}:
@@ -351,12 +451,19 @@ def trace_graph(entity_id: str, direction: str = "both", repo_id: str | None = N
             outgoing[e["source"]].append((e, e["target"], "alias"))
             incoming[e["target"]].append((e, e["source"], "alias"))
         else:
-            outgoing[e["source"]].append((e, e["target"], "out"))
-            incoming[e["target"]].append((e, e["source"], "in"))
-    q = deque([(entity_id, 0)])
-    seen_depth = {entity_id: 0}
+            source, target = e["source"], e["target"]
+            # READS records consumer -> resource. Dependency traversal follows
+            # the data in the reverse direction without rewriting the fact.
+            if e["kind"] == "READS" and nodes[source]["kind"] in {"program", "transformation"} and nodes[target]["kind"] in {"dataset", "column", "file"}:
+                source, target = target, source
+            outgoing[source].append((e, target, "out"))
+            incoming[target].append((e, source, "in"))
+    seed_truncated = max_nodes is not None and len(seeds) > max_nodes
+    seeds = seeds[:max_nodes] if max_nodes is not None else seeds
+    q = deque((seed, 0) for seed in seeds if seed in nodes)
+    seen_depth = {seed: 0 for seed in seeds if seed in nodes}
     included_edges: set[str] = set()
-    truncated = False
+    truncated = graph.get("truncated", False) or seed_truncated
     while q:
         current, depth = q.popleft()
         candidates = []
@@ -375,7 +482,7 @@ def trace_graph(entity_id: str, direction: str = "both", repo_id: str | None = N
             included_edges.add(edge["id"])
             if other in seen_depth:
                 continue
-            if depth >= max_depth:
+            if depth >= max_depth or (max_nodes is not None and len(seen_depth) >= max_nodes):
                 truncated = True
                 continue
             seen_depth[other] = depth + 1
@@ -383,6 +490,9 @@ def trace_graph(entity_id: str, direction: str = "both", repo_id: str | None = N
     selected_nodes = [nodes[nid] for nid in seen_depth]
     selected_edges = [edges[eid] for eid in included_edges
                       if edges[eid]["source"] in seen_depth and edges[eid]["target"] in seen_depth]
+    if max_nodes is not None and len(selected_edges) > max_nodes * 8:
+        selected_edges = selected_edges[:max_nodes * 8]
+        truncated = True
     gaps = []
     resolved_refs = {e["source"] for e in graph["edges"] if e["kind"] == "RESOLVES_TO"}
     for node in selected_nodes:
@@ -394,4 +504,4 @@ def trace_graph(entity_id: str, direction: str = "both", repo_id: str | None = N
                              "evidence": node.get("evidence", [])})
     return {"entity_id": entity_id, "direction": direction, "nodes": selected_nodes,
             "edges": selected_edges, "unresolved_gaps": gaps, "truncated": truncated,
-            "max_depth": max_depth, "graph_version": graph["version"], "warnings": graph["warnings"]}
+            "max_depth": max_depth, "graph_version": graph["version"], "warnings": graph["warnings"], "view": view, "granularity": "detail", "hidden_test_nodes": graph.get("hidden_test_nodes",0)}

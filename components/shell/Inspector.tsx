@@ -9,9 +9,10 @@ import { MappingPanel } from "@/components/mapping/MappingPanel";
 import { displayName, kindColor, kindIcon, kindName } from "@/components/graph/kinds";
 import { NodeActions } from "@/components/graph/NodeCard";
 import { setHighlight } from "@/lib/highlight";
-import { evidenceTarget, type ViewerTarget } from "@/lib/evidence";
+import { evidenceTarget, summarizeEvidence, type ViewerTarget } from "@/lib/evidence";
 import { explainEdge, explainNode, isSymbolicExpression } from "@/lib/explain";
 import { relativeTime, sha8, truncateText } from "@/lib/format";
+import { api } from "@/lib/api";
 import { useCountUp } from "@/lib/useCountUp";
 import type { GraphEdge, GraphNode } from "@/lib/types";
 import type { ReactNode } from "react";
@@ -33,7 +34,10 @@ export function Inspector() {
   const evidence = node?.evidence ?? edge?.evidence ?? [];
 
   const ownerSnapshots = node?.snapshots ?? edge?.snapshots;
-  const graphSnapshots = ws.graph.data?.snapshots;
+  const graphSnapshots = (ws.focus ? ws.trace.data?.snapshots : undefined) ?? ws.graph.data?.snapshots;
+  const provenance = summarizeEvidence(evidence, fallbackRepoId);
+  const relatedWarnings = (ws.graph.data?.warnings ?? []).filter((entry) => provenance.repositoryIds.has(entry.repo_id));
+  const visibleEdges = (ws.focus ? ws.trace.data?.edges : undefined) ?? ws.graph.data?.edges;
 
   const [viewer, setViewer] = useState<ViewerTarget | null>(null);
   const selectionKey = selection ? `${selection.kind}|${selection.id}` : "";
@@ -62,10 +66,10 @@ export function Inspector() {
   const linkCount = useMemo(() => {
     if (edge) return 2;
     if (!node) return 0;
-    return neighbors(node.id, ws.graph.data?.edges ?? []).reduce((sum, group) => sum + group.size, 0);
-  }, [node, edge, ws.graph.data]);
+    return neighbors(node.id, visibleEdges ?? []).reduce((sum, group) => sum + group.size, 0);
+  }, [node, edge, visibleEdges]);
   const tabCount = (tab: InspectorTab) =>
-    !node && !edge ? 0 : tab === "evidence" ? evidence.length : tab === "links" ? linkCount : 0;
+    !node && !edge ? 0 : tab === "evidence" ? provenance.spans : tab === "links" ? linkCount : 0;
   const Icon = node ? kindIcon(node.kind) : null;
 
   return (
@@ -96,7 +100,12 @@ export function Inspector() {
             <CopyButton value={selection?.id ?? ""} label="Copy id" />
           </div>
         ) : null}
-        {node ? <NodeActions id={node.id} /> : null}
+        {node && (node.kind === "architecture" || node.kind === "component") ? <div className="hierarchy-summary"><p>{String(node.attributes.summary ?? "")}</p><p className="hint">{String(node.attributes.member_count ?? 0)} members · {String(node.attributes.basis ?? "Repository structure")}</p><button className="btn primary" onClick={() => ws.openGroup(node.id, node.kind === "component" || ws.graph.data?.recommended_levels?.length === 2 ? "detail" : "interfaces")}>Explore contents</button></div> : node ? <NodeActions id={node.id} /> : null}
+        {edge && ws.graph.data?.generation && edge.attributes.support_count ? <EdgeSupport key={`${ws.graph.data.generation}:${edge.id}`} generation={ws.graph.data.generation} edgeId={edge.id} onOpen={setViewer} /> : null}
+        {node?.attributes.ai_summary || node?.attributes.ai_name ? <div className="hierarchy-summary"><span className="chip">AI assisted · {String(node.attributes.model ?? node.attributes.ai_model ?? "configured model")}</span><p>{String(node.attributes.ai_summary ?? "")}</p>{node.attributes.rationale ? <p className="hint">{String(node.attributes.rationale)}</p> : null}{node.attributes.confidence !== undefined ? <p className="hint">Model-assessed confidence: {String(node.attributes.confidence)} (not a measured probability)</p> : null}</div> : null}
+        {node && Array.isArray(node.attributes.cited_node_ids) && ws.graph.data?.generation ? <GroupingCitations key={`${ws.graph.data.generation}:${node.id}`} ids={node.attributes.cited_node_ids.filter((id): id is string => typeof id === "string")} generation={ws.graph.data.generation} /> : null}
+        {node?.attributes.context ? <p className="hint">Context: {String(node.attributes.context)} · {String(node.attributes.context_reason ?? node.attributes.context_basis ?? "Source classification")}</p> : null}
+        {node?.attributes.is_test === true ? <span className="chip">Testing component</span> : null}
       </div>
 
       <div className="tabs" role="tablist" aria-label="Inspector sections">
@@ -131,8 +140,14 @@ export function Inspector() {
               ) : null}
               <section aria-label="Evidence">
                 <div className="label" style={{ marginBottom: 6 }}>
-                  Evidence · {evidence.length}
+                  Evidence · {provenance.spans} spans
                 </div>
+                <p className="hint" style={{ margin: "0 0 8px" }}>
+                  {provenance.files} source files · {provenance.repositories} repositories. Each reference opens its indexed source.
+                </p>
+                {relatedWarnings.length > 0 ? <button type="button" className="btn" onClick={() => ws.openDialog("coverage")} style={{ marginBottom: 8 }}>
+                  {relatedWarnings.length} coverage warnings in contributing repositories
+                </button> : null}
                 <EvidenceList
                   items={evidence}
                   fallbackRepoId={fallbackRepoId}
@@ -209,7 +224,7 @@ function NodeLink({ id, meta }: { id: string; meta?: string }) {
 
 function Links({ nodeId, edge }: { nodeId: string | null; edge: GraphEdge | null }) {
   const ws = useWorkspace();
-  const edges = ws.graph.data?.edges;
+  const edges = (ws.focus ? ws.trace.data?.edges : undefined) ?? ws.graph.data?.edges;
   const [incoming, outgoing] = useMemo(() => neighbors(nodeId ?? "", edges ?? []), [nodeId, edges]);
 
   if (edge) {
@@ -377,7 +392,7 @@ function EdgeHeader({ edge }: { edge: GraphEdge }) {
 
 function NodeDetails({ node }: { node: GraphNode }) {
   const ws = useWorkspace();
-  const edges = ws.graph.data?.edges ?? [];
+  const edges = (ws.focus ? ws.trace.data?.edges : undefined) ?? ws.graph.data?.edges ?? [];
   const resolvesTo = edges.filter((edge) => edge.kind === "RESOLVES_TO" && edge.source === node.id);
   const bindingSymbols = Array.from(
     new Set(
@@ -395,6 +410,11 @@ function NodeDetails({ node }: { node: GraphNode }) {
   });
   const repoNames = (node.repositories ?? []).map((id) => ws.repoNames.get(id) ?? id);
   const snapshots = node.snapshots ?? [];
+  const readers = edges.filter((edge) => edge.kind === "READS" && edge.target === node.id);
+  const writers = edges.filter((edge) => edge.kind === "WRITES" && edge.target === node.id);
+  const columns = new Set(edges.filter((edge) => edge.kind === "HAS_COLUMN" && edge.source === node.id).map((edge) => edge.target));
+  const inputs = edges.filter((edge) => edge.kind === "DERIVES_FROM" && edge.target === node.id);
+  const outputs = edges.filter((edge) => edge.kind === "DERIVES_FROM" && edge.source === node.id);
 
   return (
     <>
@@ -403,6 +423,9 @@ function NodeDetails({ node }: { node: GraphNode }) {
           ["Kind", kindName(node.kind)],
           ["Name", node.name],
           ["Repositories", repoNames.join(", ") || "—"],
+          ["Observed data role", readers.length && writers.length ? "Read source and write target" : readers.length ? "Read source" : writers.length ? "Write target" : "Not established in loaded graph"],
+          ["Loaded columns", String(columns.size)],
+          ["Loaded column/data dependencies", `${inputs.length} inputs · ${outputs.length} outputs`],
           ["Canonical", node.attributes?.canonical === true ? "yes" : "no"],
           ["Evidence", String(node.evidence?.length ?? 0)],
         ]}
@@ -411,7 +434,7 @@ function NodeDetails({ node }: { node: GraphNode }) {
       {expression ? (
         <section aria-label="Raw expression">
           <div className="label" style={{ marginBottom: 6 }}>
-            Raw expression (never executed)
+            {node.kind === "transformation" ? "Transformation expression (never executed)" : "Raw expression (never executed)"}
           </div>
           <pre className="raw-block">{expression}</pre>
           {isSymbolicExpression(expression) ? (
@@ -461,6 +484,9 @@ function EdgeDetails({ edge }: { edge: GraphEdge }) {
   const source = ws.nodeIndex.get(edge.source);
   const target = ws.nodeIndex.get(edge.target);
   const explanation = explainEdge(edge, source?.name ?? edge.source, target?.name ?? edge.target);
+  const via = typeof edge.attributes?.via === "string" ? edge.attributes.via : null;
+  const transformation = via ? ws.nodeIndex.get(via) : undefined;
+  const expression = transformation?.expression ?? (typeof edge.attributes?.expression === "string" ? edge.attributes.expression : null);
   return (
     <>
       <KeyValue
@@ -481,6 +507,10 @@ function EdgeDetails({ edge }: { edge: GraphEdge }) {
           ))}
         </ul>
       </section>
+      {via ? <section aria-label="Transformation"><div className="label">Transformation</div>
+        {transformation ? <NodeLink id={transformation.id} /> : <p className="hint">{via}</p>}
+        {expression ? <pre className="raw-block">{expression}</pre> : null}
+      </section> : null}
       <AttributeTable attributes={edge.attributes} />
     </>
   );
@@ -544,4 +574,44 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       <Icon className="icon" aria-hidden="true" style={copied ? { color: "var(--ok-600)" } : undefined} />
     </button>
   );
+}
+
+function EdgeSupport({ generation, edgeId, onOpen }: { generation: string; edgeId: string; onOpen: (target: ViewerTarget) => void }) {
+  const [edges, setEdges] = useState<GraphEdge[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [offset, setOffset] = useState<number | null>(null);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (offset === null) return;
+    const controller = new AbortController();
+    setLoading(true); setError(null);
+    api.edgeSupport(generation, edgeId, offset, controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
+      setEdges((old) => offset === 0 ? result.edges : [...old, ...result.edges]); setTotal(result.total);
+    }).catch((error) => { if (!controller.signal.aborted) setError(String(error)); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [generation, edgeId, offset, retry]);
+  return <div className="hierarchy-summary"><button className="btn small" disabled={loading || (total !== null && edges.length >= total)} onClick={() => { setOffset(edges.length); setRetry((value) => value + 1); }}>{loading ? "Loading support…" : total === null ? "Show supporting relationships" : `Load more (${edges.length}/${total})`}</button>
+    {error ? <p role="alert">{error}</p> : null}
+    {edges.map((edge) => <div key={edge.id}><p className="hint">{edge.kind} · {edge.source} → {edge.target}</p><EvidenceList items={edge.evidence} fallbackRepoId={null} ownerSnapshots={edge.snapshots} active={null} onOpen={onOpen} /></div>)}
+  </div>;
+}
+
+function GroupingCitations({ ids, generation }: { ids: string[]; generation: string }) {
+  const ws = useWorkspace();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return <details className="hierarchy-summary"><summary>AI source references ({ids.length})</summary>
+    {ids.map((id) => <button key={id} className="btn small" disabled={busy} onClick={async () => {
+      setBusy(true); setError(null);
+      try {
+        const location = await api.graphLocation(generation, id);
+        ws.openGroup(location.ancestors.at(-1) ?? null, "detail", id); ws.selectNode(id); ws.centerOn(id);
+      } catch (error) { setError(error instanceof Error ? error.message : "Could not reveal source reference"); }
+      finally { setBusy(false); }
+    }}>{ws.nodeIndex.get(id)?.name ?? id}</button>)}
+    {error ? <p role="alert">{error}</p> : null}
+  </details>;
 }

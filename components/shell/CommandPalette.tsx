@@ -177,7 +177,7 @@ function PaletteBody() {
         }),
       },
       { id: "coverage", group: "Actions", icon: ShieldCheck, title: "Open coverage and warnings", run: act(() => ws.openDialog("coverage")) },
-      { id: "rail", group: "Actions", icon: LayoutPanelLeft, title: ws.railPinned ? "Let sidebar collapse automatically" : "Keep sidebar open", run: act(ws.toggleRail) },
+      { id: "rail", group: "Actions", icon: LayoutPanelLeft, title: ws.railPinned ? "Hide sidebar" : "Show sidebar", run: act(ws.toggleRail) },
       { id: "inspector", group: "Actions", icon: PanelRight, title: "Toggle inspector", run: act(ws.toggleInspector) },
       { id: "settings", group: "Actions", icon: Settings, title: "Open settings", run: act(() => ws.openDialog("settings")) },
       { id: "keys", group: "Actions", icon: Keyboard, title: "Keyboard shortcuts", run: act(() => ws.openDialog("shortcuts")) },

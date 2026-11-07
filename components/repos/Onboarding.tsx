@@ -17,7 +17,7 @@ export function Onboarding() {
   const hasNodes = (ws.graph.data?.nodes.length ?? 0) > 0;
 
   const steps = [
-    { label: "Register a folder", done: hasRepo },
+    { label: "Add a repository", done: hasRepo },
     { label: "Run analysis", done: completed },
     { label: "Explore lineage", done: hasNodes },
   ];
@@ -53,18 +53,11 @@ export function Onboarding() {
 
           <button type="button" className="btn primary large" onClick={() => ws.openDialog("browse")}>
             <FolderPlus className="icon" aria-hidden="true" />
-            Choose a folder
+            Add repository
           </button>
 
           <p className="note-line" style={{ margin: 0 }}>
-            Starts at the allowed root
-            {ws.settings.data ? (
-              <>
-                {" "}
-                <span className="mono">{ws.settings.data.repo_root}</span>
-              </>
-            ) : null}
-            . Nothing is registered until you choose.
+            Choose a local folder or clone a GitHub or Bitbucket repository.
           </p>
         </div>
       </section>

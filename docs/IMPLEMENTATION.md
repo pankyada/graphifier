@@ -1,3 +1,32 @@
+# Current implementation update
+
+AI fallback receives structured static gaps and can inspect static findings, declared schemas, and related indexed source. Mocked provider acceptance exercises a complex CTE with ambiguous ownership, schema lookup by source read, a recovered source-column → calculation → output-column path with exact citations, unresolved warnings, static-only zero model calls, and durable replay of gap/tool context after local files change. Recovery remains model-inferred and static coverage warnings are retained.
+
+Lineage validation now includes full API/worker scenarios for cross-repository SQL source-column → calculation → shared output-column → downstream calculation, SAS DATA-step assignments, Python CSV/dataframe calculations, and snapshot evidence retrieval. Ambiguous SQL join columns warn without attaching unsupported ownership. AI parent IDs are remapped to stored graph identities, and canonical columns follow their canonical dataset parent.
+
+Model transport and embedding failures now leave jobs failed and resumable. Their staged results remain invisible until publication completes. Resume keeps the original endpoint/model/settings and accepts current credentials only for that endpoint. A changed analysis implementation requires a new analysis. A provider request interrupted before its response is persisted may be repeated on resume.
+
+Durable analysis checkpoints preserve captured sources, completed extraction, AI conversations, consolidation output, and publication state. Resume requeues failed/cancelled jobs atomically and rejects active scope conflicts. Crash/cancellation regressions cover continuing with captured source and avoiding duplicate published snapshots.
+
+Cross-file AI evidence now validates against the indexed source corpus. Failed per-file enrichment preserves static findings with explicit warnings. A deterministic consolidation pass merges duplicate findings while retaining evidence spans. Graph and trace support Overview, Interfaces, and Detail independently of layout, and the evidence API includes all consolidated source spans.
+
+The repository now includes manifest-based monorepo discovery, additional language adapters, configurable scan budgets, an OpenAI-compatible investigation harness, flow/constellation projections, and optional snapshot-scoped embeddings. See README.md and backend/API.md for current configuration and contracts. The older release record below describes the original implementation and is retained as historical validation.
+
+Remote repository import and editable AI settings were added in the same update. GitHub/Bitbucket HTTPS or SSH imports are queued for the worker, cloned shallowly into staging, and registered only after checkout succeeds. Cancel/retry, duplicate import reuse, host allowlisting, root containment, and credential-safe errors are included. A local bare Git fixture verified a real clone, remote metadata, and suppressed post-checkout hooks. No live GitHub/Bitbucket or private enterprise credential flow was exercised. Imports do not fetch submodules or Git LFS content, and an existing completed import is reused without pulling newer commits.
+
+AI Settings now persist endpoint/model/API mode and an optional write-only key in SQLite. Test connection lists models through `/models`; extraction/tool compatibility still depends on the selected provider.
+
+Current checks completed on 7 November 2026 (Sydney):
+
+- 86 backend tests passed, including harness tool calls/cancellation/budgets, graph projection evidence and bounded search, embeddings isolation/failure cleanup, API layer validation, persistent AI configuration, and remote clone lifecycle/cleanup/URL handling.
+- TypeScript and the optimized Next.js production build passed.
+- A synthetic monorepo with 1,500 SQL files and three package manifests indexed all 1,503 sources in 3.675 seconds. It produced 28,515 findings and a full graph of 14,259 nodes. Flow and constellation requests returned bounded 800-node windows in approximately 0.3 seconds. Constellation reduced the graph to 5,256 projected nodes, hiding 9,003 detailed nodes. Search located the final file's output beyond the initial window.
+- Browser acceptance was attempted, but the browser tool did not complete. The new UI has build/type verification, without completed interactive browser verification in this update.
+
+These synthetic measurements establish coverage beyond the former 1,200-file limit. They do not establish accuracy on enterprise repositories or performance at the configured 100,000-file ceiling. Source staging and static extraction caching reduce repeated work, while findings and full graph assembly still scale with graph size in memory. Jobs now checkpoint captured sources, per-file findings, AI conversations, consolidation, and publication phases. Failed/cancelled jobs with checkpoints can be resumed. Jobs interrupted before capture completes and older jobs require a new analysis. Embeddings use an exact SQLite vector scan, with no approximate-nearest-neighbor index. AI remains bounded per file with repository context tools, and broader semantic language coverage remains adapter work. No live external model or embedding calls were made for this update's verification.
+
+---
+
 # Implementation status and validation
 
 Recorded 3 November 2026. This is a runnable local first release, with conservative extraction coverage. The architectural extension ideas in `DESIGN.md` and `EXTENDING.md` are deliberately broader than the shipped feature set.

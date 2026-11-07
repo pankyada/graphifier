@@ -1,8 +1,9 @@
 "use client";
 
 import "@xyflow/react/dist/style.css";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  applyNodeChanges,
   Background,
   BackgroundVariant,
   Controls,
@@ -21,6 +22,7 @@ import { FlowEdge } from "./FlowEdge";
 import { NodeCard, type LineageFlowNode, type LineageRole, type PathRole } from "./NodeCard";
 import { kindColor, kindName } from "./kinds";
 import { lineagePath, layeredLayout, NODE_HEIGHT, NODE_WIDTH, type Point } from "@/lib/layout";
+import { ConstellationSimulation, constellationSeeds } from "@/lib/constellation";
 import { setHighlight, useHighlight } from "@/lib/highlight";
 import type { GraphEdge, GraphNode } from "@/lib/types";
 import type { Selection } from "@/components/workspace/useWorkspace";
@@ -37,9 +39,9 @@ const EDGE_DOWNSTREAM = "#B4532A";
 const READABLE_ZOOM = 0.6;
 /** Lowest zoom the Fit overview and manual zoom-out may reach. */
 const OVERVIEW_ZOOM = 0.1;
+/** Lowest zoom at which the first view still shows the whole graph rather than its entry nodes. */
+const WHOLE_GRAPH_ZOOM = 0.4;
 const CAMERA_MS = 420;
-
-const NO_OVERRIDES = new Map<string, Point>();
 
 const SHEET_MARGIN = 12;
 /** Width of the inspector pull-tab, which the tether connects to. */
@@ -66,6 +68,7 @@ function graphBounds(positions: Map<string, Point>): { width: number; height: nu
 }
 
 export interface LineageCanvasProps {
+  view?: "flow" | "constellation";
   nodes: GraphNode[];
   edges: GraphEdge[];
   roles: Map<string, Exclude<LineageRole, null>>;
@@ -83,31 +86,107 @@ export interface LineageCanvasProps {
   onClearSelection: () => void;
 }
 
-/** Lineage canvas. Layout is a deterministic layered placement; the camera follows selection. */
+/** A topology change starts a fresh simulation and discards obsolete node measurements. */
 export function LineageCanvas(props: LineageCanvasProps) {
-  const { nodes, edges, roles, unresolvedIds, selection, onNavigateNode } = props;
+  const signature = useMemo(() => JSON.stringify([
+    props.view,
+    props.nodes.map((node) => node.id).sort(),
+    props.edges.map((edge) => [edge.id, edge.source, edge.target]).sort(),
+  ]), [props.view, props.nodes, props.edges]);
+  return <GraphCanvas key={signature} {...props} signature={signature} />;
+}
 
-  const positions = useMemo(() => layeredLayout(nodes, edges), [nodes, edges]);
-  const signature = useMemo(() => nodes.map((node) => node.id).join("|"), [nodes]);
-  // Nodes with no incoming edge start the lineage; the initial view anchors there when the whole graph is too large to read.
+function GraphCanvas(props: LineageCanvasProps & { signature: string }) {
+  const { nodes, edges, roles, unresolvedIds, selection, onNavigateNode, signature } = props;
+  const constellation = props.view === "constellation";
+  const [initialPositions] = useState(() => constellation ? constellationSeeds(nodes) : layeredLayout(nodes, edges));
+  // Keep every React Flow change, including measured dimensions and dragging.
+  // Highlight and selection decorate these objects without replacing geometry.
+  const [controlledNodes, setControlledNodes] = useState<LineageFlowNode[]>(() => nodes.map((node) => ({
+    id: node.id,
+    type: "lineage",
+    position: initialPositions.get(node.id) ?? { x: 0, y: 0 },
+    width: NODE_WIDTH,
+    height: constellation ? 152 : NODE_HEIGHT,
+    data: { node, role: null, path: null, unresolved: false, selected: false, constellation, enterDelay: 0 },
+  })));
+  const [simulation] = useState(() => constellation ? new ConstellationSimulation(nodes, edges) : null);
+  const [hasPinnedNodes, setHasPinnedNodes] = useState(false);
+  const [simulating, setSimulating] = useState(false);
+  const frame = useRef<number | null>(null);
+  const mounted = useRef(false);
+  const reducedMotion = useRef(false);
+
+  const startSimulation = useCallback(() => {
+    if (!simulation || frame.current !== null || !mounted.current) return;
+    setSimulating(true);
+    let lastFrame = 0;
+    const advance = (time: number) => {
+      if (!mounted.current) return;
+      // Publish at most 30 times per second, leaving room for drag and zoom events.
+      if (time - lastFrame < 32) {
+        frame.current = window.requestAnimationFrame(advance);
+        return;
+      }
+      lastFrame = time;
+      let active = simulation.tick();
+      if (reducedMotion.current) {
+        for (let step = 1; step < 4 && active; step += 1) active = simulation.tick();
+      }
+      if (!reducedMotion.current || !active) {
+        const nextPositions = simulation.positions();
+        setControlledNodes((current) => current.map((node) => {
+          const position = nextPositions.get(node.id);
+          return position && !node.dragging ? { ...node, position } : node;
+        }));
+      }
+      if (active) frame.current = window.requestAnimationFrame(advance);
+      else {
+        frame.current = null;
+        setSimulating(false);
+      }
+    };
+    frame.current = window.requestAnimationFrame(advance);
+  }, [simulation]);
+
+  useEffect(() => {
+    mounted.current = true;
+    reducedMotion.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    startSimulation();
+    return () => {
+      mounted.current = false;
+      if (frame.current !== null) window.cancelAnimationFrame(frame.current);
+      frame.current = null;
+    };
+  }, [startSimulation]);
+
+  const onNodesChange = useCallback((changes: NodeChange<LineageFlowNode>[]) => {
+    setControlledNodes((current) => applyNodeChanges(changes, current));
+    for (const change of changes) {
+      if (change.type !== "position" || !change.position) continue;
+      setHasPinnedNodes(true);
+      simulation?.pin(change.id, change.position);
+    }
+    if (changes.some((change) => change.type === "position" && change.position)) startSimulation();
+  }, [simulation, startSimulation]);
+
+  const resetLayout = useCallback(() => {
+    simulation?.reset();
+    setHasPinnedNodes(false);
+    setControlledNodes((current) => current.map((node) => ({
+      ...node,
+      position: initialPositions.get(node.id) ?? node.position,
+      dragging: false,
+    })));
+    startSimulation();
+  }, [initialPositions, simulation, startSimulation]);
+
+  const positions = useMemo(() => new Map(controlledNodes.map((node) => [node.id, node.position])), [controlledNodes]);
+  const nodeIndex = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
   const entryIds = useMemo(() => {
     const targets = new Set(edges.map((edge) => edge.target));
     return nodes.filter((node) => !targets.has(node.id)).map((node) => node.id);
   }, [nodes, edges]);
-
-  // Dragged positions belong to the graph they were made in; a new node set starts from the layout again.
-  const [dragged, setDragged] = useState<{ signature: string; points: Map<string, Point> } | null>(null);
-  const overrides = dragged?.signature === signature ? dragged.points : NO_OVERRIDES;
-
-  const onNodesChange = (changes: NodeChange<LineageFlowNode>[]) => {
-    const moves = changes.filter((change) => change.type === "position" && change.position);
-    if (moves.length === 0) return;
-    const points = new Map(overrides);
-    for (const change of moves) {
-      if (change.type === "position" && change.position) points.set(change.id, change.position);
-    }
-    setDragged({ signature, points });
-  };
 
   // Scoped to a short window so nodes panned into view later do not replay it.
   const [entering, setEntering] = useState(true);
@@ -135,8 +214,9 @@ export function LineageCanvas(props: LineageCanvasProps) {
 
   const flowNodes = useMemo<LineageFlowNode[]>(
     () =>
-      nodes.map((node) => {
-        const position = overrides.get(node.id) ?? positions.get(node.id) ?? { x: 0, y: 0 };
+      controlledNodes.map((geometry) => {
+        const node = nodeIndex.get(geometry.id) ?? geometry.data.node;
+        const position = geometry.position;
         const selected = selection?.kind === "node" && selection.id === node.id;
         let pathRole: PathRole = null;
         if (litKind) pathRole = node.kind === litKind ? null : "dim";
@@ -149,24 +229,21 @@ export function LineageCanvas(props: LineageCanvasProps) {
           pathRole = "dim";
         }
         return {
-          id: node.id,
-          type: "lineage",
-          position,
-          width: NODE_WIDTH,
-          height: NODE_HEIGHT,
+          ...geometry,
           selected,
           ariaLabel: `${kindName(node.kind)} ${node.name}`,
           data: {
             node,
+            constellation,
             role: roles.get(node.id) ?? null,
             path: pathRole,
             unresolved: unresolvedIds.has(node.id),
             selected,
-            enterDelay: Math.min(ENTER_MAX, Math.round((position.x / (NODE_WIDTH + 72)) * ENTER_STEP)),
+            enterDelay: constellation ? 0 : Math.min(ENTER_MAX, Math.round((position.x / (NODE_WIDTH + 72)) * ENTER_STEP)),
           },
         };
       }),
-    [nodes, positions, overrides, roles, unresolvedIds, selection, litId, litKind, hasLitNode, path, selectedEdge],
+    [controlledNodes, nodeIndex, roles, unresolvedIds, selection, litId, litKind, hasLitNode, path, selectedEdge, constellation],
   );
 
   const tetherNode = selection?.kind === "node" ? flowNodes.find((node) => node.id === selection.id) : undefined;
@@ -193,7 +270,7 @@ export function LineageCanvas(props: LineageCanvasProps) {
           target: edge.target,
           type: "flow",
           selected,
-          data: { flow: onPath ? color : null },
+          data: { flow: onPath ? color : null, constellation },
           interactionWidth: 16,
           label: showLabel ? edge.kind.replace(/_/g, " ").toLowerCase() : undefined,
           labelStyle: { fontSize: 10, fontWeight: 500, fill: color },
@@ -210,13 +287,13 @@ export function LineageCanvas(props: LineageCanvasProps) {
           },
         };
       }),
-    [edges, selection, hoveredEdge, hasLitNode, path, litId, litKind, selectedEdge],
+    [edges, selection, hoveredEdge, hasLitNode, path, litId, litKind, selectedEdge, constellation],
   );
 
   // Arrow keys walk the graph: left/right follow edges, up/down move within the column.
-  const graphRef = useRef({ nodes, edges, positions, overrides, selection, entryIds, onNavigateNode });
+  const graphRef = useRef({ nodes, edges, positions, selection, entryIds, onNavigateNode });
   useEffect(() => {
-    graphRef.current = { nodes, edges, positions, overrides, selection, entryIds, onNavigateNode };
+    graphRef.current = { nodes, edges, positions, selection, entryIds, onNavigateNode };
   });
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -237,7 +314,7 @@ export function LineageCanvas(props: LineageCanvasProps) {
   }, []);
 
   return (
-    <div className={`lineage-root${entering ? " is-entering" : ""}`} role="group" aria-label="Lineage graph">
+    <div className={`lineage-root${constellation ? " is-constellation" : ""}${entering ? " is-entering" : ""}`} role="group" aria-label={constellation ? "Entity constellation" : "Repository flow"}>
       <ReactFlow
         nodes={flowNodes}
         edges={flowEdges}
@@ -263,7 +340,7 @@ export function LineageCanvas(props: LineageCanvasProps) {
         onPaneClick={props.onClearSelection}
       >
         <Camera
-          positions={positions}
+          positions={initialPositions}
           entryIds={entryIds}
           signature={signature}
           fitNonce={props.fitNonce}
@@ -293,9 +370,10 @@ export function LineageCanvas(props: LineageCanvasProps) {
           style={{ width: 150, height: 96 }}
           ariaLabel="Graph minimap"
         />
-        {overrides.size > 0 ? (
+        {constellation || hasPinnedNodes ? (
           <Panel position="bottom-center">
-            <button type="button" className="btn small canvas-action" onClick={() => setDragged(null)}>
+            {constellation ? <span className="simulation-status" role="status">{simulating ? "Settling…" : "Settled"}{hasPinnedNodes ? " · dragged nodes pinned" : " · drag to pin"}</span> : null}
+            <button type="button" className="btn small canvas-action" onClick={resetLayout}>
               <RotateCcw className="icon" aria-hidden="true" />
               Reset layout
             </button>
@@ -312,13 +390,12 @@ function nextNode(
     nodes: GraphNode[];
     edges: GraphEdge[];
     positions: Map<string, Point>;
-    overrides: Map<string, Point>;
     selection: Selection | null;
     entryIds: string[];
   },
 ): string | null {
-  const { nodes, edges, positions, overrides, selection, entryIds } = graph;
-  const at = (id: string) => overrides.get(id) ?? positions.get(id) ?? { x: 0, y: 0 };
+  const { nodes, edges, positions, selection, entryIds } = graph;
+  const at = (id: string) => positions.get(id) ?? { x: 0, y: 0 };
   const current = selection?.kind === "node" && nodes.some((node) => node.id === selection.id) ? selection.id : null;
   if (!current) return entryIds[0] ?? nodes[0]?.id ?? null;
   const origin = at(current);
@@ -356,8 +433,8 @@ function Tether({ node, color, tabRight }: { node: LineageFlowNode | undefined; 
   const height = useStore((state) => state.height);
   if (!node || width === 0) return null;
 
-  const startX = (node.position.x + NODE_WIDTH) * zoom + tx;
-  const startY = (node.position.y + NODE_HEIGHT / 2) * zoom + ty;
+  const startX = (node.position.x + (node.measured?.width ?? NODE_WIDTH)) * zoom + tx;
+  const startY = (node.position.y + (node.measured?.height ?? NODE_HEIGHT) / 2) * zoom + ty;
   const endX = width - tabRight - TAB_WIDTH;
   const endY = height / 2;
   // Off-screen or already beside the tab: a line there would only add noise.
@@ -425,8 +502,8 @@ function Camera({ positions, entryIds, signature, fitNonce, centerRequest, focus
       const bounds = graphBounds(positions);
       // Zoom at which the whole graph fits with 20% padding on each side.
       const overviewZoom = Math.min(((width - sheetRef.current) * 0.7) / bounds.width, (height * 0.6) / bounds.height);
-      if (overviewZoom >= READABLE_ZOOM || entryIds.length === 0) {
-        void fitView({ padding: padding(), duration: CAMERA_MS, maxZoom: 1.1, minZoom: READABLE_ZOOM });
+      if (overviewZoom >= WHOLE_GRAPH_ZOOM || entryIds.length === 0) {
+        void fitView({ padding: padding(), duration: CAMERA_MS, maxZoom: 1.1, minZoom: WHOLE_GRAPH_ZOOM });
         return;
       }
       const anchors = focusId && positions.has(focusId) ? [focusId] : entryIds;

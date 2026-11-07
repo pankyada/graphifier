@@ -7,6 +7,8 @@ import { useWorkspace } from "@/components/workspace/WorkspaceContext";
 import { api, messageOf } from "@/lib/api";
 import { basename, parentPath } from "@/lib/format";
 import { useResource } from "@/lib/useResource";
+import { RemoteRepositoryForm } from "./RemoteRepositoryForm";
+import { isImportActive } from "@/lib/jobs";
 import type { BrowseResponse } from "@/lib/types";
 
 export function FolderBrowserDialog() {
@@ -14,8 +16,22 @@ export function FolderBrowserDialog() {
   const open = ws.dialog === "browse";
   return (
     <Dialog open={open} onClose={ws.closeDialog} title="Add repository" size="wide">
-      {open ? <Browser /> : null}
+      {open ? <RepositorySource /> : null}
     </Dialog>
+  );
+}
+
+function RepositorySource() {
+  const ws = useWorkspace();
+  const [source, setSource] = useState<"local" | "remote">(() => ws.importList.some(isImportActive) ? "remote" : "local");
+  return (
+    <div className="stack">
+      <div className="segmented" role="group" aria-label="Repository source">
+        <button type="button" aria-pressed={source === "local"} onClick={() => setSource("local")}>Local folder</button>
+        <button type="button" aria-pressed={source === "remote"} onClick={() => setSource("remote")}>GitHub / Bitbucket</button>
+      </div>
+      {source === "local" ? <Browser /> : <RemoteRepositoryForm />}
+    </div>
   );
 }
 

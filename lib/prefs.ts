@@ -77,5 +77,4 @@ export const PREF_KEYS = {
   railPinned: "railPinned",
   hintStep: "hintStep",
   inspectorHidden: "inspectorHidden",
-  staticNoticeDismissed: "staticNoticeDismissed",
 } as const;
