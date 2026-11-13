@@ -14,6 +14,7 @@ import urllib.request
 import certifi
 
 from .agent_config import load_agent_config
+from . import provider_http
 
 ATTR_SCHEMA={"type":"array","items":{"type":"object","additionalProperties":False,"properties":{"key":{"type":"string"},"value":{"type":"string"}},"required":["key","value"]}}
 SCHEMA = {
@@ -74,7 +75,7 @@ def _response(payload: dict, config: dict | None = None) -> dict:
     cafile = os.environ.get("SSL_CERT_FILE") or certifi.where()
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(request, timeout=timeout, context=ssl.create_default_context(cafile=cafile)) as response:
+            with provider_http.urlopen(request, timeout=timeout, context=ssl.create_default_context(cafile=cafile)) as response:
                 result = json.loads(response.read())
             if mode == "chat_completions":
                 message = result["choices"][0]["message"]

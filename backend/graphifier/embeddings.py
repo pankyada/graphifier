@@ -15,12 +15,15 @@ from itertools import islice
 import certifi
 
 from .db import connect, json_data
+from . import provider_http
 
 
 def configuration():
     model = os.environ.get("GRAPHIFIER_EMBEDDING_MODEL", "").strip()
     base = os.environ.get("GRAPHIFIER_EMBEDDING_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
-    key = os.environ.get("GRAPHIFIER_EMBEDDING_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+    shared_base = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    inherited_key = os.environ.get("OPENAI_API_KEY", "") if provider_http.same_endpoint(base, shared_base) else ""
+    key = os.environ.get("GRAPHIFIER_EMBEDDING_API_KEY", inherited_key)
     return model, base, key
 
 
@@ -55,7 +58,7 @@ def _embed(texts):
     context = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE") or certifi.where())
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(request, timeout=60, context=context) as response:
+            with provider_http.urlopen(request, timeout=60, context=context) as response:
                 data = json.load(response).get("data", [])
             break
         except urllib.error.HTTPError as exc:

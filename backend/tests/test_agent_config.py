@@ -55,7 +55,7 @@ class AgentConfigTests(unittest.TestCase):
             response = self.client.post("/api/settings/agent", json={**CONNECTION, "api_mode": mode, "reasoning_effort": "low", "clear_api_key": True})
             self.assertEqual(response.json()["reasoning_effort"], "low")
             result = {"output_text": json.dumps(EMPTY)} if mode == "responses" else {"choices": [{"message": {"content": json.dumps(EMPTY)}}]}
-            with patch("urllib.request.urlopen", return_value=Response(result)) as request:
+            with patch("graphifier.provider_http.urlopen", return_value=Response(result)) as request:
                 analyze_file("x.py", "x=1", {"x.py": "x=1"})
             payload = json.loads(request.call_args[0][0].data)
             self.assertEqual(payload[field], {"effort": "low"} if mode == "responses" else "low")
@@ -71,7 +71,7 @@ class AgentConfigTests(unittest.TestCase):
         self.assertNotIn("user:secret", response.text)
 
     def test_test_unsaved_connection_lists_models_without_saving(self):
-        with patch("urllib.request.urlopen", return_value=Response({"data": [{"id": "local-model"}]})) as request:
+        with patch("graphifier.provider_http.urlopen", return_value=Response({"data": [{"id": "local-model"}]})) as request:
             response = self.client.post("/api/settings/agent/test", json={**CONNECTION, "clear_api_key": True})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()["selected_model_available"])
@@ -90,7 +90,7 @@ class AgentConfigTests(unittest.TestCase):
                 save_agent_config(base_url="http://localhost:9000/v1", model="other-model", api_mode="responses", api_key="other-secret")
                 return Response({"choices": [{"message": {"tool_calls": [{"id": "read", "type": "function", "function": {"name": "read_source", "arguments": '{"path":"x.py","start_line":1}'}}]}}]})
             return Response({"choices": [{"message": {"content": json.dumps(EMPTY)}}]})
-        with patch("urllib.request.urlopen", side_effect=endpoint):
+        with patch("graphifier.provider_http.urlopen", side_effect=endpoint):
             analyze_file("x.py", "x=1\n", {"x.py": "x=1\n"})
         self.assertEqual(len(captured), 2)
         for url, body, auth in captured:
@@ -130,7 +130,7 @@ class AgentConfigTests(unittest.TestCase):
         (repo / "x.py").write_text("x=1\n")
         rid = self.client.post("/api/repositories", json={"path": str(repo)}).json()["id"]
         jid = self.client.post("/api/jobs", json={"repo_id": rid, "use_agent": True}).json()["id"]
-        with patch("urllib.request.urlopen", return_value=Response({"choices": [{"message": {"content": json.dumps(EMPTY)}}]})) as request:
+        with patch("graphifier.provider_http.urlopen", return_value=Response({"choices": [{"message": {"content": json.dumps(EMPTY)}}]})) as request:
             self.assertTrue(work_once())
         self.assertEqual(request.call_args[0][0].full_url, "http://localhost:8080/v1/chat/completions")
         self.assertEqual(self.client.get(f"/api/jobs/{jid}").json()["status"], "completed")

@@ -67,7 +67,7 @@ class HarnessTests(unittest.TestCase):
             {"type": "function_call_output", "call_id": "a", "output": "{}"},
             {"type": "function_call_output", "call_id": "b", "output": "{}"},
         ]}
-        with patch.dict(os.environ, {"GRAPHIFIER_AGENT_API": "chat_completions", "OPENAI_BASE_URL": "http://localhost:8080/v1"}), patch("urllib.request.urlopen", return_value=Response()) as call:
+        with patch.dict(os.environ, {"GRAPHIFIER_AGENT_API": "chat_completions", "OPENAI_BASE_URL": "http://localhost:8080/v1"}), patch("graphifier.provider_http.urlopen", return_value=Response()) as call:
             _response(payload)
             request = call.call_args[0][0]
             body = json.loads(request.data)

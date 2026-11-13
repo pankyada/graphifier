@@ -237,9 +237,10 @@ function AgentSettingsForm({ initial }: { initial: AgentSettings }) {
             autoComplete="new-password"
             value={apiKey}
             disabled={clearKey}
-            placeholder={initial.api_key_configured ? "Leave blank to keep the saved key" : "No key configured"}
+            placeholder={initial.api_key_configured ? "Blank keeps key only for the same endpoint" : "No key configured"}
             onChange={(event) => { setApiKey(event.target.value); invalidateTest(); }}
           />
+          <span className="hint">Changing the endpoint clears the previous key unless you enter a new one.</span>
         </label>
         <label className="check-consent">
           <input

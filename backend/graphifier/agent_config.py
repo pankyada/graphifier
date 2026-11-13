@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 import certifi
 
 from .db import connect
+from . import provider_http
 
 UNSET = object()
 
@@ -75,6 +76,7 @@ def load_agent_config() -> dict:
         exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_configuration'").fetchone()
         row = c.execute("SELECT * FROM agent_configuration WHERE id=1").fetchone() if exists else None
     if row:
+        environment_endpoint = config["base_url"]
         config.update(base_url=row["base_url"], model=row["model"], api_mode=row["api_mode"], saved=True, base_url_configured=True)
         config["reasoning_effort"] = row["reasoning_effort"] if "reasoning_effort" in row.keys() else None
         if "hierarchy_model" in row.keys() and row["hierarchy_model"]:
@@ -85,6 +87,8 @@ def load_agent_config() -> dict:
         # NULL inherits the environment. Empty string explicitly disables its key.
         if row["api_key"] is not None:
             config["api_key"] = row["api_key"]
+        elif not provider_http.same_endpoint(environment_endpoint, row["base_url"]):
+            config["api_key"] = ""
     return _resolve_profiles(config)
 
 
@@ -126,7 +130,10 @@ def candidate_agent_config(base_url: str, model: str, api_mode: str,
         config["reasoning_effort"] = reasoning_effort
     elif not config["saved"] and "GRAPHIFIER_AGENT_REASONING_EFFORT" not in os.environ:
         config["reasoning_effort"] = _default_effort(base_url)
-    config.update(validate_connection(base_url, model, api_mode))
+    values = validate_connection(base_url, model, api_mode)
+    if not provider_http.same_endpoint(config["base_url"], values["base_url"]):
+        config["api_key"] = ""
+    config.update(values)
     if hierarchy_model is not UNSET:
         config["_hierarchy_model_override"] = hierarchy_model.strip() if hierarchy_model else os.environ.get("GRAPHIFIER_HIERARCHY_MODEL") or None
     if hierarchy_reasoning_effort is not UNSET:
@@ -155,6 +162,10 @@ def save_agent_config(base_url: str, model: str, api_mode: str,
         c.execute("BEGIN IMMEDIATE")
         row = c.execute("SELECT * FROM agent_configuration WHERE id=1").fetchone()
         saved_key = row["api_key"] if row else None
+        previous_endpoint = row["base_url"] if row else os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        if not provider_http.same_endpoint(previous_endpoint, values["base_url"]):
+            # Persist an explicit clear: NULL would revive an environment key.
+            saved_key = ""
         if clear_api_key:
             saved_key = ""
         elif api_key and api_key.strip():
@@ -180,7 +191,7 @@ def test_agent_connection(config: dict) -> dict:
     request = urllib.request.Request(f"{config['base_url']}/models", headers=headers)
     cafile = os.environ.get("SSL_CERT_FILE") or certifi.where()
     try:
-        with urllib.request.urlopen(request, timeout=10, context=ssl.create_default_context(cafile=cafile)) as response:
+        with provider_http.urlopen(request, timeout=10, context=ssl.create_default_context(cafile=cafile)) as response:
             payload = json.loads(response.read(2_000_001))
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):

@@ -114,7 +114,7 @@ class WorkflowModelSelectionTests(unittest.TestCase):
                     result = EMPTY if harness else hierarchy_answer(user)
                     return Response({'choices': [{'message': {'content': json.dumps(result)}}]} if mode == 'chat_completions'
                                     else {'output_text': json.dumps(result)})
-                with patch('urllib.request.urlopen', side_effect=endpoint):
+                with patch('graphifier.provider_http.urlopen', side_effect=endpoint):
                     work_once()
                 job = self.client.get('/api/jobs/'+jid).json()
                 self.assertEqual(job['status'], 'completed', job)
@@ -180,7 +180,7 @@ class WorkflowModelSelectionTests(unittest.TestCase):
         self.settings(hierarchy_model='saved-hierarchy', hierarchy_reasoning_effort='high')
         body = {'base_url': 'http://localhost:8080/v1', 'model': 'candidate-harness',
                 'hierarchy_model': 'candidate-hierarchy', 'api_mode': 'responses'}
-        with patch('urllib.request.urlopen', return_value=Response({'data': [{'id': 'candidate-harness'}]})):
+        with patch('graphifier.provider_http.urlopen', return_value=Response({'data': [{'id': 'candidate-harness'}]})):
             response = self.client.post('/api/settings/agent/test', json=body)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertTrue(response.json()['selected_model_available'])
